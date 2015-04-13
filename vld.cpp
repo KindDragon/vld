@@ -589,6 +589,9 @@ VOID VisualLeakDetector::attachToLoadedModules (ModuleSet *newmodules)
             // should not, therefore, attach to itself.
             continue;
         }
+		if (_wcsicmp(TEXT("KernelBase.dll"), modulename) == 0) {
+			continue;
+		}
 
         // increase reference count to module
         HMODULE modulelocal = NULL;
