@@ -113,7 +113,9 @@ VisualLeakDetector::VisualLeakDetector ()
     // Load configuration options.
     configure();
     if (m_options & VLD_OPT_VLDOFF) {
-        Report(L"Visual Leak Detector is turned off.\n");
+        if (!(m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS)) {
+            Report(L"STATUS: Visual Leak Detector is turned off.\n");
+        }
         return;
     }
 
@@ -257,7 +259,10 @@ VisualLeakDetector::VisualLeakDetector ()
     if (dbghelp)
         ChangeModuleState(dbghelp, false);
 
-    Report(L"Visual Leak Detector Version " VLDVERSION L" installed.\n");
+    if(!(m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS)) {
+        Report(L"STATUS: Visual Leak Detector Version " VLDVERSION L" installed.\n");
+    }
+
     if (m_status & VLD_STATUS_FORCE_REPORT_TO_FILE) {
         // The report is being forced to a file. Let the human know why.
         Report(L"NOTE: Visual Leak Detector: Unicode-encoded reporting has been enabled, but the\n"
@@ -308,7 +313,9 @@ bool VisualLeakDetector::waitForAllVLDThreads()
                 CloseHandle(thread);
                 return threadsactive;
             }
-            Report(L"Visual Leak Detector: Waiting for threads to terminate...\n");
+            if (!(m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS)) {
+               Report(L"STATUS: Visual Leak Detector: Waiting for threads to terminate...\n");
+            }
         }
         CloseHandle(thread);
     }
@@ -350,7 +357,9 @@ void VisualLeakDetector::checkInternalMemoryLeaks()
     }
     if (m_options & VLD_OPT_SELF_TEST) {
         if ((internalleaks == 1) && (strcmp(leakfile, m_selfTestFile) == 0) && (leakline == m_selfTestLine)) {
-            Report(L"Visual Leak Detector passed the memory leak self-test.\n");
+            if (!(m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS)) {
+                Report(L"STATUS: Visual Leak Detector passed the memory leak self-test.\n");
+            }
         }
         else {
             Report(L"ERROR: Visual Leak Detector: Failed the memory leak self-test.\n");
@@ -393,7 +402,9 @@ VisualLeakDetector::~VisualLeakDetector ()
 
             // Show a summary.
             if (leaks_count == 0) {
-                Report(L"No memory leaks detected.\n");
+                if (!(m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS)) {
+                    Report(L"STATUS: No memory leaks detected.\n");
+                }
             }
             else {
                 Report(L"Visual Leak Detector detected %Iu memory leak", leaks_count);
@@ -432,7 +443,10 @@ VisualLeakDetector::~VisualLeakDetector ()
             Report(L"WARNING: Visual Leak Detector: Some threads appear to have not terminated normally.\n"
                 L"  This could cause inaccurate leak detection results, including false positives.\n");
         }
-        Report(L"Visual Leak Detector is now exiting.\n");
+
+        if (!(m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS)) {
+            Report(L"STATUS: Visual Leak Detector is now exiting.\n");
+        }
 
         delete g_pReportHooks;
         g_pReportHooks = NULL;
@@ -891,6 +905,12 @@ VOID VisualLeakDetector::configure ()
     }
     else {
         m_options |= VLD_OPT_REPORT_TO_DEBUGGER;
+    }
+
+    // Read whether to suppress status messages
+    GetPrivateProfileString(L"Options",L"SuppressStatusReports",L"",buffer,BSIZE,inipath);
+    if(_wcsicmp(buffer,L"yes") == 0) {
+        m_options |= VLD_OPT_SUPPRESS_STATUS_REPORTS;
     }
 
     // Read the report file encoding (ascii or unicode).
@@ -1401,6 +1421,9 @@ VOID VisualLeakDetector::reportConfig ()
         else {
             Report(L"    Outputting the report to %s\n", m_reportFilePath);
         }
+    }
+    if (m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS) {
+        Report(L"    Suppressing Status Reports.\n");
     }
     if (m_options & VLD_OPT_SLOW_DEBUGGER_DUMP) {
         Report(L"    Outputting the report to the debugger at a slower rate.\n");
@@ -2282,7 +2305,7 @@ void VisualLeakDetector::SetReportOptions(UINT32 option_mask, CONST WCHAR *filen
 
     CriticalSectionLocker cs(m_optionsLock);
     m_options &= ~(VLD_OPT_REPORT_TO_DEBUGGER | VLD_OPT_REPORT_TO_FILE | 
-        VLD_OPT_REPORT_TO_STDOUT | VLD_OPT_UNICODE_REPORT); // clear used bits
+        VLD_OPT_REPORT_TO_STDOUT | VLD_OPT_UNICODE_REPORT | VLD_OPT_SUPPRESS_STATUS_REPORTS); // clear used bits
 
     m_options |= option_mask & VLD_OPT_REPORT_TO_DEBUGGER;
     if ( (option_mask & VLD_OPT_REPORT_TO_FILE) && ( filename != NULL ))
@@ -2292,6 +2315,7 @@ void VisualLeakDetector::SetReportOptions(UINT32 option_mask, CONST WCHAR *filen
     }
     m_options |= option_mask & VLD_OPT_REPORT_TO_STDOUT;
     m_options |= option_mask & VLD_OPT_UNICODE_REPORT;
+    m_options |= option_mask & VLD_OPT_SUPPRESS_STATUS_REPORTS;
 
     if ((m_options & VLD_OPT_UNICODE_REPORT) && !(m_options & VLD_OPT_REPORT_TO_FILE)) {
         // If Unicode report encoding is enabled, then the report needs to be
