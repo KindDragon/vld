@@ -245,7 +245,7 @@ void CallStack::dump(BOOL showInternalFrames, UINT start_frame) const
             {
                 isFrameInternal = true;
                 // Don't show frames in files internal to the heap.
-                g_symbolLock.Leave();
+                //g_symbolLock.Leave();
             }
         }
 
@@ -692,7 +692,8 @@ VOID SafeCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
 
     // Walk the stack.
     CriticalSectionLocker cs(g_stackWalkLock);
-    while (count < maxdepth) {
+	g_symbolLock.Enter();
+	while (count < maxdepth) {
         count++;
         DbgTrace(L"dbghelp32.dll %i: StackWalk64\n", GetCurrentThreadId());
         if (!StackWalk64(architecture, g_currentProcess, g_currentThread, &frame, &currentContext, NULL,
@@ -708,4 +709,5 @@ VOID SafeCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
         // Push this frame's program counter onto the CallStack.
         push_back((UINT_PTR)frame.AddrPC.Offset);
     }
+	g_symbolLock.Leave();
 }

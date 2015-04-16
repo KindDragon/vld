@@ -1608,7 +1608,7 @@ LPVOID VisualLeakDetector::_HeapAlloc (HANDLE heap, DWORD flags, SIZE_T size)
     // Allocate the block.
     LPVOID block = HeapAlloc(heap, flags, size);
 
-    if ((block == NULL) || !g_vld.enabled())
+	if ((block == NULL) || !g_vld.enabled() || g_symbolLock.IsLockedByCurrentThread())
         return block;
 
     tls_t* tls = g_vld.getTls();
