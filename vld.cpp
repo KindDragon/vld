@@ -270,7 +270,10 @@ VisualLeakDetector::VisualLeakDetector ()
             L"  Unicode characters, so the report will also be sent to a file. If no file has\n"
             L"  been specified, the default file name is \"" VLD_DEFAULT_REPORT_FILE_NAME L"\".\n");
     }
-    reportConfig();
+
+    if(!(m_options & VLD_OPT_SUPPRESS_STATUS_REPORTS)) {
+        reportConfig();
+    }
 }
 
 bool VisualLeakDetector::waitForAllVLDThreads()
