@@ -26,6 +26,7 @@
 #include "utility.h"    // Provides various utility functions and macros.
 #include "vldheap.h"    // Provides internal new and delete operators.
 #include "vldint.h"
+#include <tchar.h>
 
 // Imported Global Variables
 extern CriticalSection  g_imageLock;
@@ -1083,4 +1084,79 @@ HMODULE GetCallingModule( UINT_PTR pCaller )
         hModule = (HMODULE) mbi.AllocationBase;
     }
     return hModule;
+}
+
+// LoadBoolOption - Loads specified option from environment variables or from specified ini file,
+//   if env var is unavailable and converts string values (e.g. "yes", "no", "on", "off") to boolean values.
+//
+//  - optionname (IN): Option to load.
+//
+//  - defaultvalue (IN): Default value if optionname in unavailable.
+//
+//  - inipath (IN): Path to configuration ini file.
+//
+//  Return Value:
+//
+//    Returns TRUE if the string is recognized as a "true" string. Otherwise
+//    returns FALSE.
+//
+BOOL LoadBoolOption(LPWSTR optionname, LPWSTR defaultvalue, LPWSTR inipath)
+{
+#define BSIZE 64
+	WCHAR buffer[BSIZE] = { 0 };
+
+	if (!GetEnvironmentVariable(optionname, buffer, BSIZE)) {
+		GetPrivateProfileString(L"Options", optionname, defaultvalue, buffer, BSIZE, inipath);
+	}
+
+	return StrToBool(buffer);
+#undef BSIZE
+}
+
+// LoadIntOption - Loads specified option from environment variables or from specified ini file,
+//   if env var is unavailable.
+//
+//  - optionname (IN): Option to load
+//
+//  - defaultvalue (IN): Default value if optionname in unavailable.
+//
+//  - inipath (IN): Path to configuration ini file.
+//
+//  Return Value:
+//
+//    Returns integer representation of optionname's value.
+//
+UINT LoadIntOption(LPWSTR optionname, UINT defaultvalue, LPWSTR inipath)
+{
+#define BSIZE 64
+	WCHAR buffer[BSIZE] = { 0 };
+
+	if (!GetEnvironmentVariable(optionname, buffer, BSIZE)) {
+		return GetPrivateProfileInt(L"Options", optionname, defaultvalue, inipath);
+	}
+
+	return _tstoi(buffer);
+#undef BSIZE
+}
+
+// LoadStringOption - Loads specified option from environment variables or from specified ini file,
+//   if env var is unavailable.
+//
+//  - optionname (IN): Option to load.
+//
+//  - outputbuffer (OUT): A buffer to store the string.
+//
+//  - buffersize (IN): Size of a buffer in characters.
+//
+//  - inipath (IN): Path to configuration ini file.
+//
+//  Return Value:
+//
+//    None.
+//
+VOID LoadStringOption(LPWSTR optionname, LPWSTR outputbuffer, UINT buffersize, LPWSTR inipath)
+{
+	if (!GetEnvironmentVariable(optionname, outputbuffer, buffersize)) {
+		GetPrivateProfileString(L"Options", optionname, L"", outputbuffer, buffersize, inipath);
+	}
 }
