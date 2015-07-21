@@ -26,6 +26,7 @@
 #include "utility.h"    // Provides various utility functions and macros.
 #include "vldheap.h"    // Provides internal new and delete operators.
 #include "vldint.h"
+#include <tchar.h>
 
 // Imported Global Variables
 extern CriticalSection  g_imageLock;
@@ -1083,4 +1084,87 @@ HMODULE GetCallingModule( UINT_PTR pCaller )
         hModule = (HMODULE) mbi.AllocationBase;
     }
     return hModule;
+}
+
+// LoadBoolOption - Loads specified option from environment variables or from specified ini file,
+//   if env var is unavailable and converts string values (e.g. "yes", "no", "on", "off") to boolean values.
+//
+//  - optionname (IN): Option to load.
+//
+//  - defaultvalue (IN): Default value if optionname in unavailable.
+//
+//  - inipath (IN): Path to configuration ini file.
+//
+//  Return Value:
+//
+//    Returns TRUE if the string is recognized as a "true" string. Otherwise
+//    returns FALSE.
+//
+BOOL LoadBoolOption(LPCWSTR optionname, LPCWSTR defaultvalue, LPCWSTR inipath)
+{
+    const UINT buffersize = 64;
+    WCHAR buffer[buffersize] = { 0 };
+
+    WCHAR envirinmentoptionname[buffersize] = L"Vld";
+    wcscat_s(envirinmentoptionname, buffersize, optionname);
+
+    if (!GetEnvironmentVariable(envirinmentoptionname, buffer, buffersize)) {
+        GetPrivateProfileString(L"Options", optionname, defaultvalue, buffer, buffersize, inipath);
+    }
+
+    return StrToBool(buffer);
+}
+
+// LoadIntOption - Loads specified option from environment variables or from specified ini file,
+//   if env var is unavailable.
+//
+//  - optionname (IN): Option to load
+//
+//  - defaultvalue (IN): Default value if optionname in unavailable.
+//
+//  - inipath (IN): Path to configuration ini file.
+//
+//  Return Value:
+//
+//    Returns integer representation of optionname's value.
+//
+UINT LoadIntOption(LPCWSTR optionname, UINT defaultvalue, LPCWSTR inipath)
+{
+    const UINT buffersize = 64;
+    WCHAR buffer[buffersize] = { 0 };
+
+    WCHAR envirinmentoptionname[buffersize] = L"Vld";
+    wcscat_s(envirinmentoptionname, buffersize, optionname);
+
+    if (!GetEnvironmentVariable(envirinmentoptionname, buffer, buffersize)) {
+        return GetPrivateProfileInt(L"Options", optionname, defaultvalue, inipath);
+    }
+
+    return _tstoi(buffer);
+}
+
+// LoadStringOption - Loads specified option from environment variables or from specified ini file,
+//   if env var is unavailable.
+//
+//  - optionname (IN): Option to load.
+//
+//  - outputbuffer (OUT): A buffer to store the string.
+//
+//  - buffersize (IN): Size of a buffer in characters.
+//
+//  - inipath (IN): Path to configuration ini file.
+//
+//  Return Value:
+//
+//    None.
+//
+VOID LoadStringOption(LPCWSTR optionname, LPWSTR outputbuffer, UINT buffersize, LPCWSTR inipath)
+{
+    const UINT namebuffersize = 64;
+    WCHAR envirinmentoptionname[namebuffersize] = L"Vld";
+    wcscat_s(envirinmentoptionname, namebuffersize, optionname);
+
+    if (!GetEnvironmentVariable(envirinmentoptionname, outputbuffer, buffersize)) {
+        GetPrivateProfileString(L"Options", optionname, L"", outputbuffer, buffersize, inipath);
+    }
 }

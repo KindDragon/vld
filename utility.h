@@ -155,4 +155,6 @@ DWORD CalculateCRC32(UINT_PTR p, UINT startValue = 0xD202EF8D);
 void GetFormattedMessage(DWORD last_error);
 HMODULE GetCallingModule(UINT_PTR pCaller);
 DWORD FilterFunction(long);
-
+BOOL LoadBoolOption(LPCWSTR optionname, LPCWSTR defaultvalue, LPCWSTR inipath);
+UINT LoadIntOption(LPCWSTR optionname, UINT defaultvalue, LPCWSTR inipath);
+VOID LoadStringOption(LPCWSTR optionname, LPWSTR outputbuffer, UINT buffersize, LPCWSTR inipath);

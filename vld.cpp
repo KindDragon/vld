@@ -816,54 +816,52 @@ VOID VisualLeakDetector::configure ()
     }
     DbgReport(L"Visual Leak Detector read settings from file: %s\n", inipath);
 
-#define BSIZE 64
-    WCHAR        buffer [BSIZE] = {0};
     // Read the boolean options.
-    GetPrivateProfileString(L"Options", L"VLD", L"on", buffer, BSIZE, inipath);
+    const UINT buffersize = 64;
+    WCHAR buffer[buffersize] = { 0 };
+
+    if (!GetEnvironmentVariable(L"VLD", buffer, buffersize)) {
+        GetPrivateProfileString(L"Options", L"VLD", L"on", buffer, buffersize, inipath);
+    }
+
     if (StrToBool(buffer) == FALSE) {
         m_options |= VLD_OPT_VLDOFF;
         return;
     }
 
-    GetPrivateProfileString(L"Options", L"AggregateDuplicates", L"", buffer, BSIZE, inipath);
-    if (StrToBool(buffer) == TRUE) {
+    if (LoadBoolOption(L"AggregateDuplicates", L"", inipath) == TRUE) {
         m_options |= VLD_OPT_AGGREGATE_DUPLICATES;
     }
 
-    GetPrivateProfileString(L"Options", L"SelfTest", L"", buffer, BSIZE, inipath);
-    if (StrToBool(buffer) == TRUE) {
+    if (LoadBoolOption(L"SelfTest", L"", inipath) == TRUE) {
         m_options |= VLD_OPT_SELF_TEST;
     }
 
-    GetPrivateProfileString(L"Options", L"SlowDebuggerDump", L"", buffer, BSIZE, inipath);
-    if (StrToBool(buffer) == TRUE) {
+    if (LoadBoolOption(L"SlowDebuggerDump", L"", inipath) == TRUE) {
         m_options |= VLD_OPT_SLOW_DEBUGGER_DUMP;
     }
 
-    GetPrivateProfileString(L"Options", L"StartDisabled", L"", buffer, BSIZE, inipath);
-    if (StrToBool(buffer) == TRUE) {
+    if (LoadBoolOption(L"StartDisabled", L"", inipath) == TRUE) {
         m_options |= VLD_OPT_START_DISABLED;
     }
 
-    GetPrivateProfileString(L"Options", L"TraceInternalFrames", L"", buffer, BSIZE, inipath);
-    if (StrToBool(buffer) == TRUE) {
+    if (LoadBoolOption(L"TraceInternalFrames", L"", inipath) == TRUE) {
         m_options |= VLD_OPT_TRACE_INTERNAL_FRAMES;
     }
 
-    GetPrivateProfileString(L"Options", L"SkipHeapFreeLeaks", L"", buffer, BSIZE, inipath);
-    if (StrToBool(buffer) == TRUE) {
+    if (LoadBoolOption(L"SkipHeapFreeLeaks", L"", inipath) == TRUE) {
         m_options |= VLD_OPT_SKIP_HEAPFREE_LEAKS;
     }
 
     // Read the integer configuration options.
-    m_maxDataDump = GetPrivateProfileInt(L"Options", L"MaxDataDump", VLD_DEFAULT_MAX_DATA_DUMP, inipath);
-    m_maxTraceFrames = GetPrivateProfileInt(L"Options", L"MaxTraceFrames", VLD_DEFAULT_MAX_TRACE_FRAMES, inipath);
+    m_maxDataDump = LoadIntOption(L"MaxDataDump", VLD_DEFAULT_MAX_DATA_DUMP, inipath);
+    m_maxTraceFrames = LoadIntOption(L"MaxTraceFrames", VLD_DEFAULT_MAX_TRACE_FRAMES, inipath);
     if (m_maxTraceFrames < 1) {
         m_maxTraceFrames = VLD_DEFAULT_MAX_TRACE_FRAMES;
     }
 
     // Read the force-include module list.
-    GetPrivateProfileString(L"Options", L"ForceIncludeModules", L"", m_forcedModuleList, MAXMODULELISTLENGTH, inipath);
+    LoadStringOption(L"ForceIncludeModules", m_forcedModuleList, MAXMODULELISTLENGTH, inipath);
     _wcslwr_s(m_forcedModuleList, MAXMODULELISTLENGTH);
     if (wcscmp(m_forcedModuleList, L"*") == 0)
         m_forcedModuleList[0] = '\0';
@@ -872,14 +870,14 @@ VOID VisualLeakDetector::configure ()
     
     // Read the report destination (debugger, file, or both).
     WCHAR filename [MAX_PATH] = {0};
-    GetPrivateProfileString(L"Options", L"ReportFile", L"", filename, MAX_PATH, inipath);
+    LoadStringOption(L"ReportFile", filename, MAX_PATH, inipath);
     if (filename[0] == '\0') {
         wcsncpy_s(filename, MAX_PATH, VLD_DEFAULT_REPORT_FILE_NAME, _TRUNCATE);
     }
     WCHAR* path = _wfullpath(m_reportFilePath, filename, MAX_PATH);
     assert(path);
 
-    GetPrivateProfileString(L"Options", L"ReportTo", L"", buffer, BSIZE, inipath);
+    LoadStringOption(L"ReportTo", buffer, buffersize, inipath);
     if (_wcsicmp(buffer, L"both") == 0) {
         m_options |= (VLD_OPT_REPORT_TO_DEBUGGER | VLD_OPT_REPORT_TO_FILE);
     }
@@ -894,7 +892,7 @@ VOID VisualLeakDetector::configure ()
     }
 
     // Read the report file encoding (ascii or unicode).
-    GetPrivateProfileString(L"Options", L"ReportEncoding", L"", buffer, BSIZE, inipath);
+    LoadStringOption(L"ReportEncoding", buffer, buffersize, inipath);
     if (_wcsicmp(buffer, L"unicode") == 0) {
         m_options |= VLD_OPT_UNICODE_REPORT;
     }
@@ -907,13 +905,12 @@ VOID VisualLeakDetector::configure ()
     }
 
     // Read the stack walking method.
-    GetPrivateProfileString(L"Options", L"StackWalkMethod", L"", buffer, BSIZE, inipath);
+    LoadStringOption(L"StackWalkMethod", buffer, buffersize, inipath);
     if (_wcsicmp(buffer, L"safe") == 0) {
         m_options |= VLD_OPT_SAFE_STACK_WALK;
     }
 
-    GetPrivateProfileString(L"Options", L"ValidateHeapAllocs", L"", buffer, BSIZE, inipath);
-    if (StrToBool(buffer) == TRUE) {
+    if (LoadBoolOption(L"ValidateHeapAllocs", L"", inipath) == TRUE) {
         m_options |= VLD_OPT_VALIDATE_HEAPFREE;
     }
 }
