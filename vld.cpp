@@ -817,7 +817,14 @@ VOID VisualLeakDetector::configure ()
     DbgReport(L"Visual Leak Detector read settings from file: %s\n", inipath);
 
 	// Read the boolean options.
-	if (LoadBoolOption(L"VLD", L"on", inipath) == FALSE) {
+	const UINT buffersize = 64;
+	WCHAR buffer[buffersize] = { 0 };
+
+	if (!GetEnvironmentVariable(L"VLD", buffer, buffersize)) {
+		GetPrivateProfileString(L"Options", L"VLD", L"on", buffer, buffersize, inipath);
+	}
+
+	if (StrToBool(buffer) == FALSE) {
 		m_options |= VLD_OPT_VLDOFF;
 		return;
 	}
@@ -870,10 +877,7 @@ VOID VisualLeakDetector::configure ()
     WCHAR* path = _wfullpath(m_reportFilePath, filename, MAX_PATH);
     assert(path);
 
-#define BSIZE 64
-	WCHAR buffer[BSIZE] = { 0 };
-
-	LoadStringOption(L"ReportTo", buffer, BSIZE, inipath);
+	LoadStringOption(L"ReportTo", buffer, buffersize, inipath);
     if (_wcsicmp(buffer, L"both") == 0) {
         m_options |= (VLD_OPT_REPORT_TO_DEBUGGER | VLD_OPT_REPORT_TO_FILE);
     }
@@ -888,7 +892,7 @@ VOID VisualLeakDetector::configure ()
     }
 
     // Read the report file encoding (ascii or unicode).
-	LoadStringOption(L"ReportEncoding", buffer, BSIZE, inipath);
+	LoadStringOption(L"ReportEncoding", buffer, buffersize, inipath);
     if (_wcsicmp(buffer, L"unicode") == 0) {
         m_options |= VLD_OPT_UNICODE_REPORT;
     }
@@ -901,7 +905,7 @@ VOID VisualLeakDetector::configure ()
     }
 
     // Read the stack walking method.
-	LoadStringOption(L"StackWalkMethod", buffer, BSIZE, inipath);
+	LoadStringOption(L"StackWalkMethod", buffer, buffersize, inipath);
     if (_wcsicmp(buffer, L"safe") == 0) {
         m_options |= VLD_OPT_SAFE_STACK_WALK;
     }
