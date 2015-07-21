@@ -1086,8 +1086,6 @@ HMODULE GetCallingModule( UINT_PTR pCaller )
     return hModule;
 }
 
-#define VLD_OPTION_PREFIX L"Vld"
-
 // LoadBoolOption - Loads specified option from environment variables or from specified ini file,
 //   if env var is unavailable and converts string values (e.g. "yes", "no", "on", "off") to boolean values.
 //
@@ -1102,14 +1100,13 @@ HMODULE GetCallingModule( UINT_PTR pCaller )
 //    Returns TRUE if the string is recognized as a "true" string. Otherwise
 //    returns FALSE.
 //
-BOOL LoadBoolOption(LPCWSTR optionname, LPWSTR defaultvalue, LPWSTR inipath)
+BOOL LoadBoolOption(LPCWSTR optionname, LPCWSTR defaultvalue, LPCWSTR inipath)
 {
     const UINT buffersize = 64;
     WCHAR buffer[buffersize] = { 0 };
 
-    WCHAR envirinmentoptionname[buffersize] = VLD_OPTION_PREFIX;
-    const UINT bufferoffset = sizeof(VLD_OPTION_PREFIX) / sizeof(WCHAR) - 1;
-    wcscpy_s(&envirinmentoptionname[bufferoffset], buffersize - bufferoffset, optionname);
+    WCHAR envirinmentoptionname[buffersize] = L"Vld";
+    wcscat_s(envirinmentoptionname, buffersize, optionname);
 
     if (!GetEnvironmentVariable(envirinmentoptionname, buffer, buffersize)) {
         GetPrivateProfileString(L"Options", optionname, defaultvalue, buffer, buffersize, inipath);
@@ -1131,14 +1128,13 @@ BOOL LoadBoolOption(LPCWSTR optionname, LPWSTR defaultvalue, LPWSTR inipath)
 //
 //    Returns integer representation of optionname's value.
 //
-UINT LoadIntOption(LPCWSTR optionname, UINT defaultvalue, LPWSTR inipath)
+UINT LoadIntOption(LPCWSTR optionname, UINT defaultvalue, LPCWSTR inipath)
 {
     const UINT buffersize = 64;
     WCHAR buffer[buffersize] = { 0 };
 
-    WCHAR envirinmentoptionname[buffersize] = VLD_OPTION_PREFIX;
-    const UINT bufferoffset = sizeof(VLD_OPTION_PREFIX) / sizeof(WCHAR) - 1;
-    wcscpy_s(&envirinmentoptionname[bufferoffset], buffersize - bufferoffset, optionname);
+    WCHAR envirinmentoptionname[buffersize] = L"Vld";
+    wcscat_s(envirinmentoptionname, buffersize, optionname);
 
     if (!GetEnvironmentVariable(envirinmentoptionname, buffer, buffersize)) {
         return GetPrivateProfileInt(L"Options", optionname, defaultvalue, inipath);
@@ -1162,16 +1158,13 @@ UINT LoadIntOption(LPCWSTR optionname, UINT defaultvalue, LPWSTR inipath)
 //
 //    None.
 //
-VOID LoadStringOption(LPCWSTR optionname, LPWSTR outputbuffer, UINT buffersize, LPWSTR inipath)
+VOID LoadStringOption(LPCWSTR optionname, LPWSTR outputbuffer, UINT buffersize, LPCWSTR inipath)
 {
     const UINT namebuffersize = 64;
-    WCHAR envirinmentoptionname[namebuffersize] = VLD_OPTION_PREFIX;
-    const UINT bufferoffset = sizeof(VLD_OPTION_PREFIX) / sizeof(WCHAR) - 1;
-    wcscpy_s(&envirinmentoptionname[bufferoffset], namebuffersize - bufferoffset, optionname);
+    WCHAR envirinmentoptionname[namebuffersize] = L"Vld";
+    wcscat_s(envirinmentoptionname, namebuffersize, optionname);
 
     if (!GetEnvironmentVariable(envirinmentoptionname, outputbuffer, buffersize)) {
         GetPrivateProfileString(L"Options", optionname, L"", outputbuffer, buffersize, inipath);
     }
 }
-
-#undef VLD_OPTION_PREFIX
