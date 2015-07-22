@@ -102,8 +102,9 @@ VisualLeakDetector::VisualLeakDetector ()
     _set_error_mode(_OUT_TO_STDERR);
 
     // Initialize configuration options and related private data.
-    _wcsnset_s(m_forcedModuleList, MAXMODULELISTLENGTH, '\0', _TRUNCATE);
-    m_maxDataDump    = 0xffffffff;
+	_wcsnset_s(m_forcedModuleList, MAXMODULELISTLENGTH, '\0', _TRUNCATE);
+	_wcsnset_s(m_excludedModuleList, MAXMODULELISTLENGTH, '\0', _TRUNCATE);
+	m_maxDataDump = 0xffffffff;
     m_maxTraceFrames = 0xffffffff;
     m_options        = 0x0;
     m_reportFile     = NULL;
@@ -589,6 +590,12 @@ VOID VisualLeakDetector::attachToLoadedModules (ModuleSet *newmodules)
             // should not, therefore, attach to itself.
             continue;
         }
+		if (_wcsicmp(TEXT("KernelBase.dll"), modulename) == 0) {
+			continue;
+		}
+		if (_wcsicmp(TEXT("dbghelp.dll"), modulename) == 0) {
+			continue;
+		}
 
         // increase reference count to module
         HMODULE modulelocal = NULL;
@@ -630,7 +637,11 @@ VOID VisualLeakDetector::attachToLoadedModules (ModuleSet *newmodules)
                     if (wcsstr(m_forcedModuleList, modulename) != NULL) {
                         // Exclude this module from leak detection.
                          moduleFlags |= VLD_MODULE_EXCLUDED;
-                    }
+					}
+					else if (wcsstr(m_excludedModuleList, modulename) != NULL) {
+						// Exclude this module from leak detection.
+						moduleFlags |= VLD_MODULE_EXCLUDED;
+					}
                 }
             }
         }
@@ -867,7 +878,10 @@ VOID VisualLeakDetector::configure ()
         m_forcedModuleList[0] = '\0';
     else
         m_options |= VLD_OPT_MODULE_LIST_INCLUDE;
-    
+
+	GetPrivateProfileString(L"Options", L"ForceExcludeModules", L"", m_excludedModuleList, MAXMODULELISTLENGTH, inipath);
+	_wcslwr_s(m_excludedModuleList, MAXMODULELISTLENGTH);
+
     // Read the report destination (debugger, file, or both).
     WCHAR filename [MAX_PATH] = {0};
     LoadStringOption(L"ReportFile", filename, MAX_PATH, inipath);
@@ -1064,6 +1078,11 @@ VOID VisualLeakDetector::mapBlock (HANDLE heap, LPCVOID mem, SIZE_T size, bool c
     blockinfo->threadId = threadId;
     blockinfo->serialNumber = m_requestCurr++;
     blockinfo->size = size;
+
+	/*if (size == 368) {
+		OutputDebugStringA("Got you\n");
+	}*/
+
     blockinfo->reported = false;
 
     if (SIZE_MAX - m_totalAlloc > size)
@@ -1993,17 +2012,34 @@ SIZE_T VisualLeakDetector::ReportLeaks( )
     }
 
     // Generate a memory leak report for each heap in the process.
-    SIZE_T leaksCount = 0;
-    CriticalSectionLocker cs(m_heapMapLock);
+	SIZE_T leaksCount = 0;
+	HeapMap *heapMap = 0;
+	{
+		CriticalSectionLocker cs(m_heapMapLock);
+		heapMap = m_heapMap;
+		m_heapMap = new HeapMap;
+		m_heapMap->reserve(HEAP_MAP_RESERVE);
+	}
     bool firstLeak = true;
     Set<blockinfo_t*> aggregatedLeaks;
-    for (HeapMap::Iterator heapit = m_heapMap->begin(); heapit != m_heapMap->end(); ++heapit) {
+	for (HeapMap::Iterator heapit = heapMap->begin(); heapit != heapMap->end(); ++heapit) {
         HANDLE heap = (*heapit).first;
         UNREFERENCED_PARAMETER(heap);
         heapinfo_t* heapinfo = (*heapit).second;
         leaksCount += reportLeaks(heapinfo, firstLeak, aggregatedLeaks);
     }
-    return leaksCount;
+
+	// Free internally allocated resources used by the heapmap and blockmap.
+	for (HeapMap::Iterator heapit = heapMap->begin(); heapit != heapMap->end(); ++heapit) {
+		BlockMap *blockmap = &(*heapit).second->blockMap;
+		for (BlockMap::Iterator blockit = blockmap->begin(); blockit != blockmap->end(); ++blockit) {
+			delete (*blockit).second;
+		}
+		delete blockmap;
+	}
+	delete heapMap;
+	
+	return leaksCount;
 }
 
 SIZE_T VisualLeakDetector::ReportThreadLeaks( DWORD threadId ) 

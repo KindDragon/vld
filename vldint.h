@@ -360,8 +360,9 @@ private:
     ////////////////////////////////////////////////////////////////////////////////
     // Private data
     ////////////////////////////////////////////////////////////////////////////////
-    WCHAR                m_forcedModuleList [MAXMODULELISTLENGTH]; // List of modules to be forcefully included in leak detection.
-    HeapMap             *m_heapMap;           // Map of all active heaps in the process.
+	WCHAR                m_forcedModuleList[MAXMODULELISTLENGTH]; // List of modules to be forcefully included in leak detection.
+	WCHAR                m_excludedModuleList[MAXMODULELISTLENGTH]; // List of modules to be forcefully excluded in leak detection.
+	HeapMap             *m_heapMap;           // Map of all active heaps in the process.
     IMalloc             *m_iMalloc;           // Pointer to the system implementation of IMalloc.
 
     SIZE_T               m_requestCurr;       // Current request number.
