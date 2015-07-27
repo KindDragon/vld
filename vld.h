@@ -279,6 +279,7 @@ __declspec(dllimport) VLD_BOOL VLDGetModulesList(wchar_t *modules, VLD_UINT size
 // VLD_OPT_REPORT_TO_FILE
 // VLD_OPT_REPORT_TO_STDOUT
 // VLD_OPT_UNICODE_REPORT
+// VLD_OPT_SUPPRESS_STATUS_REPORTS
 //
 // filename is optional and can be NULL.
 //
