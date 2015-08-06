@@ -186,6 +186,13 @@ void* VisualLeakDetector::_new (new_t pnew, context_t& context, bool debugRuntim
     if (debugRuntime)
         tls->flags |= VLD_TLS_DEBUGCRTALLOC;
 
+	// Do the allocation. The block will be mapped by _RtlAllocateHeap.
+	void* block = pnew(size);
+
+	// fix for StackWalkMethod=safe
+	if (isModuleExcluded(GET_RETURN_ADDRESS(context)))
+		return block;
+
     bool firstcall = (tls->context.fp == 0x0);
     if (firstcall) {
         // This is the first call to enter VLD for the current allocation.
@@ -193,9 +200,6 @@ void* VisualLeakDetector::_new (new_t pnew, context_t& context, bool debugRuntim
         tls->context = context;
         tls->blockProcessed = FALSE;
     }
-
-    // Do the allocation. The block will be mapped by _RtlAllocateHeap.
-    void* block = pnew(size);
 
     if (firstcall)
         firstAllocCall(tls);
