@@ -2389,8 +2389,10 @@ void VisualLeakDetector::setupReporting()
     WCHAR      bom = BOM; // Unicode byte-order mark.
 
     //Close the previous report file if needed.
-    if ( m_reportFile )
+    if (m_reportFile) {
         fclose(m_reportFile);
+        m_reportFile = NULL;
+    }
 
     // Reporting to file enabled.
     if (m_options & VLD_OPT_UNICODE_REPORT) {
@@ -2401,7 +2403,7 @@ void VisualLeakDetector::setupReporting()
             // Couldn't open the file.
             m_reportFile = NULL;
         }
-        else {
+        else if (m_reportFile) {
             fwrite(&bom, sizeof(WCHAR), 1, m_reportFile);
             SetReportEncoding(unicode);
         }
@@ -2412,7 +2414,7 @@ void VisualLeakDetector::setupReporting()
             // Couldn't open the file.
             m_reportFile = NULL;
         }
-        else {
+        else if (m_reportFile) {
             SetReportEncoding(ascii);
         }
     }
