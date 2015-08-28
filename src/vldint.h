@@ -261,13 +261,13 @@ public:
     // Public IMalloc methods - for support of COM-based memory leak detection.
     ////////////////////////////////////////////////////////////////////////////////
     ULONG   __stdcall AddRef ();
-    LPVOID  __stdcall Alloc (SIZE_T size);
-    INT     __stdcall DidAlloc (LPVOID mem);
-    VOID    __stdcall Free (LPVOID mem);
-    SIZE_T  __stdcall GetSize (LPVOID mem);
+    LPVOID  __stdcall Alloc (_In_ SIZE_T size);
+    INT     __stdcall DidAlloc (_In_opt_ LPVOID mem);
+    VOID    __stdcall Free (_In_opt_ LPVOID mem);
+    SIZE_T  __stdcall GetSize (_In_opt_ LPVOID mem);
     VOID    __stdcall HeapMinimize ();
     HRESULT __stdcall QueryInterface (REFIID iid, LPVOID *object);
-    LPVOID  __stdcall Realloc (LPVOID mem, SIZE_T size);
+    LPVOID  __stdcall Realloc (_In_opt_ LPVOID mem, _In_ SIZE_T size);
     ULONG   __stdcall Release ();
 
     void DisableLeakDetection ();
