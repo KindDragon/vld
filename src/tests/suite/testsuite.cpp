@@ -323,9 +323,6 @@ unsigned __stdcall threadproc_test (LPVOID param)
         // Allocate a block, using recursion to build up a stack of random
         // depth.
         UINT depth = random(MAXDEPTH);
-        if (depth < MINDEPTH) {
-            depth = MINDEPTH;
-        }
         recursivelyallocate(depth, action, size);
 
         // Every once in a while, free a random block.
