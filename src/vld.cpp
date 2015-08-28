@@ -241,7 +241,7 @@ VisualLeakDetector::VisualLeakDetector ()
     }
     delete [] symbolpath;
 
-    ntdllPatch->moduleBase = (UINT_PTR)ntdll;
+    ntdllPatch[0].moduleBase = (UINT_PTR)ntdll;
     PatchImport(kernel32, ntdllPatch);
     if (kernelBase != NULL)
         PatchImport(kernelBase, ntdllPatch);
