@@ -1826,57 +1826,47 @@ FARPROC VisualLeakDetector::_RGetProcAddress(HMODULE module, LPCSTR procname)
 //
 FARPROC VisualLeakDetector::_GetProcAddressForCaller(HMODULE module, LPCSTR procname, LPVOID caller)
 {
-	// See if there is an entry in the patch table that matches the requested
-	// function.
-	UINT tablesize = _countof(g_vld.m_patchTable);
-	for (UINT index = 0; index < tablesize; index++) {
-		moduleentry_t *entry = &g_vld.m_patchTable[index];
-		if ((entry->moduleBase == 0x0) || ((HMODULE)entry->moduleBase != module)) {
-			// This patch table entry is for a different module.
-			continue;
-		}
+    FARPROC original = g_vld._RGetProcAddressForCaller(module, procname, caller);
+    if (original) {
+        // See if there is an entry in the patch table that matches the requested
+        // function.
+        UINT tablesize = _countof(g_vld.m_patchTable);
+        for (UINT index = 0; index < tablesize; index++) {
+            moduleentry_t *entry = &g_vld.m_patchTable[index];
+            if ((entry->moduleBase == 0x0) || ((HMODULE)entry->moduleBase != module)) {
+                // This patch table entry is for a different module.
+                continue;
+            }
 
-		patchentry_t *patchentry = entry->patchTable;
-		while (patchentry->importName)
-		{
-			// This patch table entry is for the specified module. If the requested
-			// imports name matches the entry's import name (or ordinal), then
-			// return the address of the replacement instead of the address of the
-			// actual import.
-			if ((SIZE_T)patchentry->importName < (SIZE_T)g_vld.m_vldBase) {
-				// This entry's import name is not a valid pointer to data in
-				// vld.dll. It must be an ordinal value.
-				if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
-					if (patchentry->original != NULL)
-						*patchentry->original = g_vld._RGetProcAddress(module, procname);
-					return (FARPROC)patchentry->replacement;
-				}
-			}
-			else {
-				__try
-				{
-					if (strcmp(patchentry->importName, procname) == 0) {
-						if (patchentry->original != NULL)
-							*patchentry->original = g_vld._RGetProcAddress(module, procname);
-						return (FARPROC)patchentry->replacement;
-					}
-				}
-				__except (FilterFunction(GetExceptionCode()))
-				{
-					if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
-						if (patchentry->original != NULL)
-							*patchentry->original = g_vld._RGetProcAddress(module, procname);
-						return (FARPROC)patchentry->replacement;
-					}
-				}
-			}
-			patchentry++;
-		}
-	}
+            patchentry_t *patchentry = entry->patchTable;
+            while (patchentry->importName) {
+                // This patch table entry is for the specified module. If the requested
+                // imports name matches the entry's import name (or ordinal), then
+                // return the address of the replacement instead of the address of the
+                // actual import.
+                if (HIWORD(patchentry->importName) == 0) {
+                    // Import name is a function ordinal value.
+                    if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
+                        if (patchentry->original != NULL)
+                            *patchentry->original = original;
+                        return (FARPROC)patchentry->replacement;
+                    }
+                } else {
+                    // Import name is a function name value.
+                    if (strcmp(patchentry->importName, procname) == 0) {
+                        if (patchentry->original != NULL)
+                            *patchentry->original = original;
+                        return (FARPROC)patchentry->replacement;
+                    }
+                }
+                patchentry++;
+            }
+        }
+    }
 
-	// The requested function is not a patched function. Just return the real
-	// address of the requested function.
-	return g_vld._RGetProcAddressForCaller(module, procname, caller);
+    // The requested function is not a patched function. Just return the real
+    // address of the requested function.
+    return original;
 }
 
 FARPROC VisualLeakDetector::_RGetProcAddressForCaller(HMODULE module, LPCSTR procname, LPVOID caller)
