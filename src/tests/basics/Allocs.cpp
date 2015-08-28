@@ -161,9 +161,9 @@ static void alloc(LeakOption type, bool bFree)
     }
     else if (type == eStrdup)
     {
-        leaked_memory = (int*)strdup("strdup() leaks!");
+        leaked_memory = (int*)_strdup("_strdup() leaks!");
         leaked_memory_dbg = (int*)_strdup_dbg("_strdup_dbg() leaks!", _NORMAL_BLOCK, __FILE__, __LINE__);
-        void* leaked_wmemory = (int*)wcsdup(L"wcsdup() leaks!");
+        void* leaked_wmemory = (int*)_wcsdup(L"_wcsdup() leaks!");
         void* leaked_wmemory_dbg = (int*)_wcsdup_dbg(L"_wcsdup_dbg() leaks!", _NORMAL_BLOCK, __FILE__, __LINE__);
         if (bFree)
         {
