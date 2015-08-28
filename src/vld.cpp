@@ -730,33 +730,26 @@ LPWSTR VisualLeakDetector::buildSymbolSearchPath ()
 #if _MSC_VER > 1900
 #error Not supported VS
 #endif
-    // Append Visual Studio symbols cache directory.
-    HKEY debuggerkey;
-    WCHAR symbolCacheDir [MAX_PATH] = {0};
-    // VS2015
-    LSTATUS regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\14.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2013
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\12.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2012
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\11.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2010
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\10.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2008
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\9.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
+    // Append Visual Studio 2015/2013/2012/2010/2008 symbols cache directory.
+    for (UINT n = 9; n <= 14; ++n) {
+        WCHAR debuggerpath[MAX_PATH] = { 0 };
+        swprintf(debuggerpath, _countof(debuggerpath), L"Software\\Microsoft\\VisualStudio\\%u.0\\Debugger", n);
+        HKEY debuggerkey;
+        WCHAR symbolCacheDir[MAX_PATH] = { 0 };
+        LSTATUS regstatus = RegOpenKeyExW(HKEY_CURRENT_USER, debuggerpath, 0, KEY_QUERY_VALUE, &debuggerkey);
 
-    if (regstatus == ERROR_SUCCESS)
-    {
-        DWORD valuetype;
-        DWORD dirLength = MAX_PATH * sizeof(WCHAR);
-        regstatus = RegQueryValueEx(debuggerkey, L"SymbolCacheDir", NULL, &valuetype, (LPBYTE)&symbolCacheDir, &dirLength);
-        if (regstatus == ERROR_SUCCESS && valuetype == REG_SZ)
-        {
-            path = AppendString(path, L";");
-            path = AppendString(path, symbolCacheDir);
-            path = AppendString(path, L"\\MicrosoftPublicSymbols;");
-            path = AppendString(path, symbolCacheDir);
+        if (regstatus == ERROR_SUCCESS) {
+            DWORD valuetype;
+            DWORD dirLength = MAX_PATH * sizeof(WCHAR);
+            regstatus = RegQueryValueExW(debuggerkey, L"SymbolCacheDir", NULL, &valuetype, (LPBYTE)&symbolCacheDir, &dirLength);
+            if (regstatus == ERROR_SUCCESS && valuetype == REG_SZ) {
+                path = AppendString(path, L";");
+                path = AppendString(path, symbolCacheDir);
+                path = AppendString(path, L"\\MicrosoftPublicSymbols;");
+                path = AppendString(path, symbolCacheDir);
+            }
+            RegCloseKey(debuggerkey);
         }
-        RegCloseKey(debuggerkey);
     }
 
     // Remove any quotes from the path. The symbol handler doesn't like them.
