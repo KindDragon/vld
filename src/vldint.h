@@ -294,12 +294,18 @@ public:
     bool GetModulesList(WCHAR *modules, UINT size);
     int ResolveCallstacks();
 
-    static NTSTATUS __stdcall _LdrLoadDll (LPWSTR searchpath, ULONG flags, unicodestring_t *modulename,
+    static NTSTATUS __stdcall _LdrLoadDll (LPWSTR searchpath, PULONG flags, unicodestring_t *modulename,
         PHANDLE modulehandle);
     static NTSTATUS __stdcall _LdrLoadDllWin8 (DWORD_PTR reserved, PULONG flags, unicodestring_t *modulename,
         PHANDLE modulehandle);
     static FARPROC __stdcall _RGetProcAddress(HMODULE module, LPCSTR procname);
     static FARPROC __stdcall _RGetProcAddressForCaller(HMODULE module, LPCSTR procname, LPVOID caller);
+
+    static NTSTATUS NTAPI _LdrGetDllHandle(IN PWSTR DllPath OPTIONAL, IN PULONG DllCharacteristics OPTIONAL, IN PUNICODE_STRING DllName, OUT PVOID *DllHandle OPTIONAL);
+    static NTSTATUS NTAPI _LdrGetProcedureAddress(IN PVOID BaseAddress, IN PANSI_STRING Name, IN ULONG Ordinal, OUT PVOID * ProcedureAddress);
+    static NTSTATUS NTAPI _LdrUnloadDll(IN PVOID BaseAddress);
+    static NTSTATUS NTAPI _LdrLockLoaderLock(IN ULONG Flags, OUT PULONG Disposition OPTIONAL, OUT PULONG_PTR Cookie OPTIONAL);
+    static NTSTATUS NTAPI _LdrUnlockLoaderLock(IN ULONG Flags, IN ULONG_PTR Cookie OPTIONAL);
 
 private:
     ////////////////////////////////////////////////////////////////////////////////

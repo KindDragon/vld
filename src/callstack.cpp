@@ -28,6 +28,7 @@
 #include "vldheap.h"    // Provides internal new and delete operators.
 #include "vldint.h"     // Provides access to VLD internals.
 #include "cppformat\format.h"
+#include "loaderlock.h"
 
 // Imported global variables.
 extern HANDLE             g_currentProcess;
@@ -272,6 +273,8 @@ DWORD CallStack::resolveFunction(SIZE_T programCounter, IMAGEHLP_LINEW64* source
 //
 void CallStack::dump(BOOL showInternalFrames, UINT start_frame) const
 {
+    LoaderLock ll;
+
     // The stack was dumped already
     if (m_resolved)
     {
@@ -357,6 +360,8 @@ void CallStack::dump(BOOL showInternalFrames, UINT start_frame) const
 //
 int CallStack::resolve(BOOL showInternalFrames)
 {
+    LoaderLock ll;
+
     if (m_resolved)
     {
         // already resolved, no need to do it again
@@ -539,6 +544,8 @@ bool CallStack::isInternalModule( const PWSTR filename ) const
 //
 VOID FastCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
 {
+    LoaderLock ll;
+
     UINT32  count = 0;
     UINT_PTR function = context.func;
     if (function != NULL)
@@ -627,6 +634,8 @@ VOID FastCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
 //
 VOID SafeCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
 {
+    LoaderLock ll;
+
     UINT32 count = 0;
     UINT_PTR function = context.func;
     if (function != NULL)
