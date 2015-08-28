@@ -420,7 +420,7 @@ BOOL IsModulePatched (HMODULE importmodule, moduleentry_t patchtable [], UINT ta
     for (UINT index = 0; index < tablesize; index++) {
         moduleentry_t *entry = &patchtable[index];
         found = FindPatch(importmodule, entry);
-        if (found == TRUE) {
+        if (found != FALSE) {
             // Found one of the listed patches installed in the import module.
             return TRUE;
         }
@@ -681,7 +681,7 @@ BOOL PatchModule (HMODULE importmodule, moduleentry_t patchtable [], UINT tables
     DbgTrace(L"dbghelp32.dll %i: PatchModule - ImageDirectoryEntryToDataEx\n", GetCurrentThreadId());
     for (index = 0; index < tablesize; index++) {
         entry = &patchtable[index];
-        if (PatchImport(importmodule, entry) == TRUE) {
+        if (PatchImport(importmodule, entry) != FALSE) {
             patched = TRUE;
         }
     }
@@ -757,7 +757,7 @@ VOID Print (LPWSTR messagew)
     else if (hook_retval == 1)
         __debugbreak();
 
-    if (s_reportToDebugger && (s_reportDelay == TRUE)) {
+    if (s_reportToDebugger && (s_reportDelay != FALSE)) {
         Sleep(10); // Workaround the Visual Studio 6 bug where debug strings are sometimes lost if they're sent too fast.
     }
 }

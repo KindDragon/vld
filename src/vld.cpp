@@ -432,7 +432,7 @@ VisualLeakDetector::~VisualLeakDetector ()
         }
         delete m_tlsMap;
 
-        if (threadsactive == TRUE) {
+        if (threadsactive != FALSE) {
             Report(L"WARNING: Visual Leak Detector: Some threads appear to have not terminated normally.\n"
                 L"  This could cause inaccurate leak detection results, including false positives.\n");
         }
@@ -840,27 +840,27 @@ VOID VisualLeakDetector::configure ()
         return;
     }
 
-    if (LoadBoolOption(L"AggregateDuplicates", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"AggregateDuplicates", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_AGGREGATE_DUPLICATES;
     }
 
-    if (LoadBoolOption(L"SelfTest", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"SelfTest", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_SELF_TEST;
     }
 
-    if (LoadBoolOption(L"SlowDebuggerDump", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"SlowDebuggerDump", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_SLOW_DEBUGGER_DUMP;
     }
 
-    if (LoadBoolOption(L"StartDisabled", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"StartDisabled", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_START_DISABLED;
     }
 
-    if (LoadBoolOption(L"TraceInternalFrames", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"TraceInternalFrames", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_TRACE_INTERNAL_FRAMES;
     }
 
-    if (LoadBoolOption(L"SkipHeapFreeLeaks", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"SkipHeapFreeLeaks", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_SKIP_HEAPFREE_LEAKS;
     }
 
@@ -921,7 +921,7 @@ VOID VisualLeakDetector::configure ()
         m_options |= VLD_OPT_SAFE_STACK_WALK;
     }
 
-    if (LoadBoolOption(L"ValidateHeapAllocs", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"ValidateHeapAllocs", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_VALIDATE_HEAPFREE;
     }
 }
