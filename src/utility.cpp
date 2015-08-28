@@ -589,9 +589,10 @@ BOOL PatchImport (HMODULE importmodule, moduleentry_t *patchModule)
                             *patchEntry->original = func;
 
                         DWORD protect;
-                        VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_EXECUTE_READWRITE, &protect);
-                        thunk->u1.Function = (DWORD_PTR)replacement;
-                        VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), protect, &protect);
+                        if (VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_EXECUTE_READWRITE, &protect)) {
+                            thunk->u1.Function = (DWORD_PTR)replacement;
+                            VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), protect, &protect);
+                        }
                     }
                     // The patch has been installed in the import module.
                     result++;
@@ -885,9 +886,10 @@ VOID RestoreImport (HMODULE importmodule, moduleentry_t* module)
                     // entry with the import's real address. Note that the IAT entry may
                     // be write-protected, so we must first ensure that it is writable.
                     DWORD protect;
-                    VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), PAGE_EXECUTE_READWRITE, &protect);
-                    iate->u1.Function = (DWORD_PTR)original;
-                    VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), protect, &protect);
+                    if (VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), PAGE_EXECUTE_READWRITE, &protect)) {
+                        iate->u1.Function = (DWORD_PTR)original;
+                        VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), protect, &protect);
+                    }
                 }
                 result++;
                 iate++;
