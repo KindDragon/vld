@@ -261,6 +261,11 @@ VisualLeakDetector::VisualLeakDetector ()
     if (dbghelp)
         ChangeModuleState(dbghelp, false);
 
+    // Increment the library reference count to defer unloading the library,
+    // since a call to CoGetMalloc returns the global pointer to the VisualLeakDetector object.
+    HMODULE module = NULL;
+    GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)m_vldBase, &module);
+
     Report(L"Visual Leak Detector Version " VLDVERSION L" installed.\n");
     if (m_status & VLD_STATUS_FORCE_REPORT_TO_FILE) {
         // The report is being forced to a file. Let the human know why.
@@ -468,6 +473,9 @@ VisualLeakDetector::~VisualLeakDetector ()
     if (m_reportFile != NULL) {
         fclose(m_reportFile);
     }
+
+    // Decrement the library reference count.
+    FreeLibrary(m_vldBase);
 }
 
 

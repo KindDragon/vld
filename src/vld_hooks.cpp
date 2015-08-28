@@ -1936,6 +1936,9 @@ HRESULT VisualLeakDetector::_CoGetMalloc (DWORD context, LPMALLOC *imalloc)
             hr = E_INVALIDARG;
     }
 
+    if (SUCCEEDED(hr)) {
+        g_vld.AddRef();
+    }
     return hr;
 }
 
@@ -2055,7 +2058,14 @@ ULONG VisualLeakDetector::AddRef ()
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
     assert(m_iMalloc != NULL);
-    return (m_iMalloc) ? m_iMalloc->AddRef() : 0;
+    if (m_iMalloc) {
+        // Increment the library reference count to defer unloading the library,
+        // since this function increments the reference count of the IMalloc interface.
+        HMODULE module = NULL;
+        GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)m_vldBase, &module);
+        return m_iMalloc->AddRef();
+    }
+    return 0;
 }
 
 // Alloc - Calls to IMalloc::Alloc end up here. This function is just a wrapper
@@ -2247,5 +2257,12 @@ ULONG VisualLeakDetector::Release ()
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
     assert(m_iMalloc != NULL);
-    return (m_iMalloc) ? m_iMalloc->Release() : 0;
+    ULONG nCount = 0;
+    if (m_iMalloc) {
+        nCount = m_iMalloc->Release();
+
+        // Decrement the library reference count.
+        FreeLibrary(m_vldBase);
+    }
+    return nCount;
 }
