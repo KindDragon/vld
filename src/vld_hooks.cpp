@@ -1750,10 +1750,9 @@ LPVOID VisualLeakDetector::_RtlReAllocateHeap (HANDLE heap, DWORD flags, LPVOID 
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
-    LPVOID               newmem;
 
     // Reallocate the block.
-    newmem = RtlReAllocateHeap(heap, flags, mem, size);
+    LPVOID newmem = RtlReAllocateHeap(heap, flags, mem, size);
     if ((newmem == NULL) || !g_vld.enabled())
         return newmem;
 
@@ -1802,10 +1801,10 @@ LPVOID VisualLeakDetector::_HeapReAlloc (HANDLE heap, DWORD flags, LPVOID mem, S
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
-    LPVOID               newmem;
+    LPVOID oldmem = mem;
 
     // Reallocate the block.
-    newmem = HeapReAlloc(heap, flags, mem, size);
+    LPVOID newmem = HeapReAlloc(heap, flags, mem, size);
     if ((newmem == NULL) || !g_vld.enabled())
         return newmem;
 
@@ -1835,7 +1834,7 @@ LPVOID VisualLeakDetector::_HeapReAlloc (HANDLE heap, DWORD flags, LPVOID mem, S
 
     tls->context = context;
     tls->heap = heap;
-    tls->blockWithoutGuard = mem;
+    tls->blockWithoutGuard = oldmem;
     tls->newBlockWithoutGuard = newmem;
     tls->size = size;
 
