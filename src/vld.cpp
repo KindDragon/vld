@@ -35,6 +35,7 @@
 #include "set.h"         // Provides a lightweight STL-like set template.
 #include "utility.h"     // Provides various utility functions.
 #include "vldint.h"      // Provides access to the Visual Leak Detector internals.
+#include "loaderlock.h"
 
 #define BLOCK_MAP_RESERVE   64  // This should strike a balance between memory use and a desire to minimize heap hits.
 #define HEAP_MAP_RESERVE    2   // Usually there won't be more than a few heaps in the process, so this should be small.
@@ -52,7 +53,6 @@ CriticalSection  g_imageLock;      // Serializes calls to the Debug Help Library
 HANDLE           g_processHeap;    // Handle to the process's heap (COM allocations come from here).
 CriticalSection  g_heapMapLock;    // Serializes access to the heap and block maps.
 CriticalSection  g_symbolLock;     // Serializes calls to the Debug Help Library symbols handling APIs.
-CriticalSection  g_loaderLock;     // Serializes calls to LdrLoadDll, GetProcAddress and EnumerateLoadedModulesW64().
 ReportHookSet*   g_pReportHooks;
 
 // The one and only VisualLeakDetector object instance.
@@ -60,12 +60,302 @@ __declspec(dllexport) VisualLeakDetector g_vld;
 
 // Patch only this entries in Kernel32.dll and KernelBase.dll
 patchentry_t ldrLoadDllPatch [] = {
-    "LdrLoadDll",   NULL,    VisualLeakDetector::_LdrLoadDll,
-    NULL,           NULL,    NULL
+    "LdrLoadDll",             NULL, VisualLeakDetector::_LdrLoadDll,
+    "LdrGetDllHandle",        NULL, VisualLeakDetector::_LdrGetDllHandle,
+    "LdrGetProcedureAddress", NULL, VisualLeakDetector::_LdrGetProcedureAddress,
+    "LdrUnloadDll",           NULL, VisualLeakDetector::_LdrUnloadDll,
+    "LdrLockLoaderLock",      NULL, VisualLeakDetector::_LdrLockLoaderLock,
+    "LdrUnlockLoaderLock",    NULL, VisualLeakDetector::_LdrUnlockLoaderLock,
+    NULL,                     NULL, NULL
 };
 moduleentry_t ntdllPatch [] = {
     "ntdll.dll",    FALSE,  NULL,   ldrLoadDllPatch,
 };
+
+/////////////////////////////////////////////////////////
+
+typedef BOOLEAN(NTAPI *PDLL_INIT_ROUTINE)(IN PVOID DllHandle, IN ULONG Reason, IN PCONTEXT Context OPTIONAL);
+BOOLEAN WINAPI LdrpCallInitRoutine(IN PVOID BaseAddress, IN ULONG Reason, IN PVOID Context, IN PDLL_INIT_ROUTINE EntryPoint)
+{
+#ifdef _DEBUG
+    TCHAR szName[MAX_PATH] = { 0 };
+    GetModuleFileName((HMODULE)BaseAddress, szName, _countof(szName));
+#endif
+    if (Reason == DLL_PROCESS_ATTACH) {
+        g_vld.RefreshModules();
+    }
+
+    return EntryPoint(BaseAddress, Reason, (PCONTEXT)Context);
+}
+
+PBYTE NtDllFindDetourAddress(const PBYTE pAddress, SIZE_T dwSize)
+{
+    MEMORY_BASIC_INFORMATION meminfo = { 0 };
+    if (VirtualQuery(pAddress, &meminfo, sizeof(meminfo))) {
+        // Find spare bytes at the end of the memory region that are unused
+        // so we can jump to this address and set up the detour.
+        PBYTE end = (PBYTE)meminfo.BaseAddress + meminfo.RegionSize;
+        PBYTE begin = end;
+
+        while (((SIZE_T)(end - begin) < dwSize) && (begin != pAddress)) {
+            if (*(--begin) != 0x00)
+                end = begin;
+        }
+        if (begin != pAddress)
+            return begin;
+    }
+    return NULL;
+}
+
+PBYTE NtDllFindParamAddress(const PBYTE pAddress)
+{
+    PBYTE ptr = pAddress;
+    // Test previous 32 bytes to find the begining address we need to patch
+    // for 32bit find => push [ebp][14h] => parameters are pushed to stack
+    // for 64bit find => mov r8,... => parameters are moved to registers r8, rdx, rcx
+    while (pAddress - --ptr < 0x20) {
+#ifdef _WIN64
+        if (((ptr[0] & 0x4D) == ptr[0]) && (ptr[1] == 0x8B) && ((ptr[2] & 0xC7) == ptr[2])) {
+#else
+        if ((ptr[0] == 0xFF) && (ptr[1] == 0x75) && (ptr[2] == 0x14)) {
+#endif
+            return ptr;
+        }
+        }
+    return NULL;
+    }
+
+PBYTE NtDllFindCallAddress(const PBYTE pAddress)
+{
+    PBYTE ptr = pAddress;
+    // Test previous 32 bytes to find the begining address we need to patch
+    // for 32bit find => call [ebp][08h]
+    // for 64bit find => call <register>
+    while (pAddress - --ptr < 0x20) {
+#ifdef _WIN64
+        if ((ptr[0] == 0xFF) && ((ptr[1] & 0xD7) == ptr[1])) {
+            if ((*(ptr - 1) & 0x41) == *(ptr - 1)) {
+                --ptr;
+            }
+#else
+        if ((ptr[0] == 0xFF) && (ptr[1] == 0x55) && (ptr[2] == 0x08)) {
+#endif
+            return ptr;
+        }
+        }
+    return NULL;
+    }
+
+typedef struct _NTDLL_LDR_PATCH {
+    PBYTE pPatchAddress;
+    SIZE_T nPatchSize;
+    BYTE pBackup[0x20];
+    PBYTE pDetourAddress;
+    SIZE_T nDetourSize;
+    BOOL bState;
+} NTDLL_LDR_PATCH, *PNTDLL_LDR_PATCH;
+
+NTDLL_LDR_PATCH patch;
+
+#if 0
+BOOL NtDllPatch(const PBYTE pReturnAddress, NTDLL_LDR_PATCH &NtDllPatch)
+{
+    if (NtDllPatch.bState == FALSE) {
+#ifdef _WIN64
+        BYTE ptr[] = { '?', 0x8B, '?' };                                     // mov r9, <register>
+        BYTE mov[] = { 0x48, 0xB8, '?', '?', '?', '?', '?', '?', '?', '?' }; // mov rax, 0x0000000000000000
+#else
+        BYTE ptr[] = { 0xFF, 0x75, 0x08 };                                   // push [ebp][08h]
+        BYTE mov[] = { 0x90, 0xB8, '?', '?', '?', '?' };                     // mov eax, 0x00000000
+#endif
+        BYTE jmp[] = { 0xE9, '?', '?', '?', '?' };                           // jmp 0x00000000
+        BYTE call[] = { 0xFF, 0xD0 };                                        // call eax/rax
+
+        NtDllPatch.pPatchAddress = NtDllFindParamAddress(pReturnAddress);
+        PBYTE pCallAddress = NtDllFindCallAddress(pReturnAddress);
+        NtDllPatch.nPatchSize = pReturnAddress - NtDllPatch.pPatchAddress;
+        SIZE_T nParamSize = pCallAddress - NtDllPatch.pPatchAddress;
+
+        NtDllPatch.nDetourSize = _countof(ptr) + nParamSize + _countof(mov) + _countof(jmp);
+        NtDllPatch.pDetourAddress = NtDllFindDetourAddress(pReturnAddress, NtDllPatch.nDetourSize);
+
+        memcpy(NtDllPatch.pBackup, NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize);
+
+        if (NtDllPatch.pPatchAddress && NtDllPatch.pDetourAddress) {
+            DWORD dwProtect = 0;
+            if (VirtualProtect(NtDllPatch.pDetourAddress, NtDllPatch.nDetourSize, PAGE_EXECUTE_READWRITE, &dwProtect)) {
+                memset(NtDllPatch.pDetourAddress, 0x90, NtDllPatch.nDetourSize);
+
+#ifdef _WIN64
+                SIZE_T nCallSize = pReturnAddress - pCallAddress;
+                // Copy original param instructions
+                memcpy(&NtDllPatch.pDetourAddress[0], NtDllPatch.pPatchAddress, nParamSize);
+                // Find which register holds the EntryPoint
+                ptr[0] = 0x4C + ((nCallSize > 2) && (pCallAddress[0] & 0x01) ? 1 : 0);
+                ptr[2] = 0xC8 + (pCallAddress[nCallSize - 1] & 0x07);
+                // Move EntryPoint to r9
+                memcpy(&NtDllPatch.pDetourAddress[nParamSize], &ptr, _countof(ptr));
+#else
+                // Push EntryPoint as last parameter
+                memcpy(&NtDllPatch.pDetourAddress[0], &ptr, _countof(ptr));
+                // Copy original param instructions
+                memcpy(&NtDllPatch.pDetourAddress[_countof(ptr)], NtDllPatch.pPatchAddress, nParamSize);
+#endif
+
+                // Move LdrpCallInitRoutine to eax/rax
+                *(PSIZE_T)(&mov[2]) = (SIZE_T)LdrpCallInitRoutine;
+                memcpy(&NtDllPatch.pDetourAddress[_countof(ptr) + nParamSize], &mov, _countof(mov));
+
+                // Jump to original function
+                *(DWORD*)(&jmp[1]) = (DWORD)(pReturnAddress - _countof(call) - (NtDllPatch.pDetourAddress + NtDllPatch.nDetourSize));
+                memcpy(&NtDllPatch.pDetourAddress[_countof(ptr) + nParamSize + _countof(mov)], &jmp, _countof(jmp));
+
+                VirtualProtect(NtDllPatch.pDetourAddress, NtDllPatch.nDetourSize, dwProtect, &dwProtect);
+
+                if (VirtualProtect(NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize, PAGE_EXECUTE_READWRITE, &dwProtect)) {
+                    memset(NtDllPatch.pPatchAddress, 0x90, NtDllPatch.nPatchSize);
+
+                    // Jump to detour address
+                    *(DWORD*)(&jmp[1]) = (DWORD)(NtDllPatch.pDetourAddress - (pReturnAddress - _countof(call)));
+                    memcpy(pReturnAddress - _countof(call) - _countof(jmp), &jmp, _countof(jmp));
+
+                    // Call LdrpCallInitRoutine from eax/rax
+                    memcpy(pReturnAddress - _countof(call), &call, _countof(call));
+
+                    VirtualProtect(NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize, dwProtect, &dwProtect);
+
+                    NtDllPatch.bState = TRUE;
+                }
+            }
+        }
+    }
+    return NtDllPatch.bState;
+}
+#endif
+
+BOOL NtDllPatch(const PBYTE pReturnAddress, NTDLL_LDR_PATCH &NtDllPatch)
+{
+    if (NtDllPatch.bState == FALSE) {
+#ifdef _WIN64
+        BYTE ptr[] = { '?', 0x87, '?' };                                     // xchg r.., r9
+        BYTE mov[] = { 0x48, 0xB8, '?', '?', '?', '?', '?', '?', '?', '?' }; // mov rax, 0x0000000000000000
+        BYTE call[] = { 0xFF, 0xD0, '?', 0x87, '?' };                        // call rax // xchg r.., r9
+#else
+        BYTE ptr[] = { 0xFF, 0x75, 0x08 };                                   // push [ebp][08h]
+        BYTE mov[] = { 0x90, 0xB8, '?', '?', '?', '?' };                     // mov eax, 0x00000000
+        BYTE call[] = { 0xFF, 0xD0 };                                        // call eax
+#endif
+        BYTE jmp[] = { 0xE9, '?', '?', '?', '?' };                           // jmp 0x00000000
+
+        NtDllPatch.pPatchAddress = NtDllFindParamAddress(pReturnAddress);
+        PBYTE pCallAddress = NtDllFindCallAddress(pReturnAddress);
+        NtDllPatch.nPatchSize = pReturnAddress - NtDllPatch.pPatchAddress;
+        SIZE_T nParamSize = pCallAddress - NtDllPatch.pPatchAddress;
+
+        NtDllPatch.nDetourSize = _countof(ptr) + nParamSize + _countof(mov) + _countof(jmp);
+        NtDllPatch.pDetourAddress = NtDllFindDetourAddress(pReturnAddress, NtDllPatch.nDetourSize);
+
+        if (NtDllPatch.pPatchAddress && NtDllPatch.pDetourAddress && ((_countof(jmp) + _countof(call)) <= NtDllPatch.nPatchSize)) {
+            memcpy(NtDllPatch.pBackup, NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize);
+
+            DWORD dwProtect = 0;
+            if (VirtualProtect(NtDllPatch.pDetourAddress, NtDllPatch.nDetourSize, PAGE_EXECUTE_READWRITE, &dwProtect)) {
+                memset(NtDllPatch.pDetourAddress, 0x90, NtDllPatch.nDetourSize);
+#ifdef _WIN64
+                // Copy original param instructions
+                memcpy(&NtDllPatch.pDetourAddress[0], NtDllPatch.pPatchAddress, nParamSize);
+                // Exchange the register that holds the EntryPoint with r9
+                BYTE reg = ((pCallAddress[0] & 0x41) == 0x41 ? 0x08 : 0x00) + (pCallAddress[pReturnAddress - pCallAddress - 1] & 0x07);
+                ptr[0] = 0x4C + ((reg & 0x08) ? 0x01 : 0x00); //ptr[0] = 0x49 + ((reg & 0x08) ? 0x04 : 0x00);
+                ptr[2] = 0xC8 + (reg & 0x07);                 //ptr[2] = 0xC1 + (((reg & 0x07) / 2) * 0x10) + ((reg & 0x07) % 2 ? 0x08 : 0x00);
+                memcpy(&NtDllPatch.pDetourAddress[nParamSize], &ptr, _countof(ptr));
+#else
+                // Push EntryPoint as last parameter
+                memcpy(&NtDllPatch.pDetourAddress[0], &ptr, _countof(ptr));
+                // Copy original param instructions
+                memcpy(&NtDllPatch.pDetourAddress[_countof(ptr)], NtDllPatch.pPatchAddress, nParamSize);
+#endif
+                // Move LdrpCallInitRoutine to eax/rax
+                *(PSIZE_T)(&mov[2]) = (SIZE_T)LdrpCallInitRoutine;
+                memcpy(&NtDllPatch.pDetourAddress[_countof(ptr) + nParamSize], &mov, _countof(mov));
+
+                // Jump to original function
+                *(DWORD*)(&jmp[1]) = (DWORD)(pReturnAddress - _countof(call) - (NtDllPatch.pDetourAddress + NtDllPatch.nDetourSize));
+                memcpy(&NtDllPatch.pDetourAddress[_countof(ptr) + nParamSize + _countof(mov)], &jmp, _countof(jmp));
+
+                VirtualProtect(NtDllPatch.pDetourAddress, NtDllPatch.nDetourSize, dwProtect, &dwProtect);
+
+                if (VirtualProtect(NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize, PAGE_EXECUTE_READWRITE, &dwProtect)) {
+                    memset(NtDllPatch.pPatchAddress, 0x90, NtDllPatch.nPatchSize);
+
+                    // Jump to detour address
+                    *(DWORD*)(&jmp[1]) = (DWORD)(NtDllPatch.pDetourAddress - (pReturnAddress - _countof(call)));
+                    memcpy(pReturnAddress - _countof(call) - _countof(jmp), &jmp, _countof(jmp));
+#ifdef _WIN64
+                    // Exchange r9 with the register that originally held the EntryPoint
+                    memcpy(&call[2], &ptr, _countof(ptr));
+#endif
+                    // Call LdrpCallInitRoutine from eax/rax
+                    memcpy(pReturnAddress - _countof(call), &call, _countof(call));
+
+                    VirtualProtect(NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize, dwProtect, &dwProtect);
+
+                    NtDllPatch.bState = TRUE;
+                }
+            }
+        }
+    }
+    return NtDllPatch.bState;
+}
+
+
+BOOL NtDllRestore(NTDLL_LDR_PATCH &NtDllPatch)
+{
+    // Restore patched bytes
+    BOOL bResult = FALSE;
+    if (NtDllPatch.bState && NtDllPatch.nPatchSize && &NtDllPatch.pBackup[0]) {
+        DWORD dwProtect = 0;
+        if (VirtualProtect(NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize, PAGE_EXECUTE_READWRITE, &dwProtect)) {
+            memcpy(NtDllPatch.pPatchAddress, NtDllPatch.pBackup, NtDllPatch.nPatchSize);
+            VirtualProtect(NtDllPatch.pPatchAddress, NtDllPatch.nPatchSize, dwProtect, &dwProtect);
+
+            if (VirtualProtect(NtDllPatch.pDetourAddress, NtDllPatch.nDetourSize, PAGE_EXECUTE_READWRITE, &dwProtect)) {
+                memset(NtDllPatch.pDetourAddress, 0x00, NtDllPatch.nDetourSize);
+                VirtualProtect(NtDllPatch.pDetourAddress, NtDllPatch.nDetourSize, dwProtect, &dwProtect);
+                bResult = TRUE;
+            }
+        }
+    }
+    return bResult;
+}
+
+#define _DECL_DLLMAIN  // for _CRT_INIT
+#include <process.h>   // for _CRT_INIT
+#pragma comment(linker, "/entry:DllEntryPoint")
+
+__declspec(noinline)
+BOOL WINAPI DllEntryPoint(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
+{
+    // Patch/Restore ntdll address that calls the dll entry point
+    if (fdwReason == DLL_PROCESS_ATTACH) {
+        NtDllPatch((PBYTE)_ReturnAddress(), patch);
+    }
+
+    if (fdwReason == DLL_PROCESS_ATTACH || fdwReason == DLL_THREAD_ATTACH)
+        if (!_CRT_INIT(hinstDLL, fdwReason, lpReserved))
+            return(FALSE);
+
+    if (fdwReason == DLL_PROCESS_DETACH || fdwReason == DLL_THREAD_DETACH)
+        if (!_CRT_INIT(hinstDLL, fdwReason, lpReserved))
+            return(FALSE);
+
+    if (fdwReason == DLL_PROCESS_DETACH) {
+        NtDllRestore(patch);
+    }
+    return(TRUE);
+}
+
+/////////////////////////////////////////////////////////
 
 bool IsWindowsVersionOrGreater(WORD wMajorVersion, WORD wMinorVersion, WORD wServicePackMajor)
 {
@@ -158,12 +448,20 @@ VisualLeakDetector::VisualLeakDetector ()
         RtlAllocateHeap   = (RtlAllocateHeap_t)GetProcAddress(ntdll, "RtlAllocateHeap");
         RtlFreeHeap       = (RtlFreeHeap_t)GetProcAddress(ntdll, "RtlFreeHeap");
         RtlReAllocateHeap = (RtlReAllocateHeap_t)GetProcAddress(ntdll, "RtlReAllocateHeap");
+
+        LdrGetDllHandle = (LdrGetDllHandle_t)GetProcAddress(ntdll, "LdrGetDllHandle");
+        LdrGetProcedureAddress = (LdrGetProcedureAddress_t)GetProcAddress(ntdll, "LdrGetProcedureAddress");
+        LdrUnloadDll = (LdrUnloadDll_t)GetProcAddress(ntdll, "LdrUnloadDll");
+        LdrLockLoaderLock = (LdrLockLoaderLock_t)GetProcAddress(ntdll, "LdrLockLoaderLock");
+        LdrUnlockLoaderLock = (LdrUnlockLoaderLock_t)GetProcAddress(ntdll, "LdrUnlockLoaderLock");
     }
+
+    LoaderLock ll;
+
     g_heapMapLock.Initialize();
     g_symbolLock.Initialize();
     g_vldHeap         = HeapCreate(0x0, 0, 0);
     g_vldHeapLock.Initialize();
-    g_loaderLock.Initialize();
     g_pReportHooks    = new ReportHookSet;
 
     // Initialize remaining private data.
@@ -241,7 +539,7 @@ VisualLeakDetector::VisualLeakDetector ()
     }
     delete [] symbolpath;
 
-    ntdllPatch->moduleBase = (UINT_PTR)ntdll;
+    ntdllPatch[0].moduleBase = (UINT_PTR)ntdll;
     PatchImport(kernel32, ntdllPatch);
     if (kernelBase != NULL)
         PatchImport(kernelBase, ntdllPatch);
@@ -260,6 +558,11 @@ VisualLeakDetector::VisualLeakDetector ()
     HMODULE dbghelp = GetModuleHandleW(L"dbghelp.dll");
     if (dbghelp)
         ChangeModuleState(dbghelp, false);
+
+    // Increment the library reference count to defer unloading the library,
+    // since a call to CoGetMalloc returns the global pointer to the VisualLeakDetector object.
+    HMODULE module = NULL;
+    GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)m_vldBase, &module);
 
     Report(L"Visual Leak Detector Version " VLDVERSION L" installed.\n");
     if (m_status & VLD_STATUS_FORCE_REPORT_TO_FILE) {
@@ -368,6 +671,8 @@ void VisualLeakDetector::checkInternalMemoryLeaks()
 //
 VisualLeakDetector::~VisualLeakDetector ()
 {
+    LoaderLock ll;
+
     if (m_options & VLD_OPT_VLDOFF) {
         // VLD has been turned off.
         return;
@@ -432,7 +737,7 @@ VisualLeakDetector::~VisualLeakDetector ()
         }
         delete m_tlsMap;
 
-        if (threadsactive == TRUE) {
+        if (threadsactive != FALSE) {
             Report(L"WARNING: Visual Leak Detector: Some threads appear to have not terminated normally.\n"
                 L"  This could cause inaccurate leak detection results, including false positives.\n");
         }
@@ -455,7 +760,6 @@ VisualLeakDetector::~VisualLeakDetector ()
     m_optionsLock.Delete();
     m_modulesLock.Delete();
     m_tlsLock.Delete();
-    g_loaderLock.Delete();
     g_imageLock.Delete();
     g_heapMapLock.Delete();
     g_symbolLock.Delete();
@@ -468,6 +772,9 @@ VisualLeakDetector::~VisualLeakDetector ()
     if (m_reportFile != NULL) {
         fclose(m_reportFile);
     }
+
+    // Decrement the library reference count.
+    FreeLibrary(m_vldBase);
 }
 
 
@@ -537,6 +844,8 @@ static char dbghelp32_assert[sizeof(IMAGEHLP_MODULE64) == 3256 ? 1 : -1];
 //
 VOID VisualLeakDetector::attachToLoadedModules (ModuleSet *newmodules)
 {
+    LoaderLock ll;
+
     // Iterate through the supplied set, until all modules have been attached.
     for (ModuleSet::Iterator newit = newmodules->begin(); newit != newmodules->end(); ++newit)
     {
@@ -730,33 +1039,26 @@ LPWSTR VisualLeakDetector::buildSymbolSearchPath ()
 #if _MSC_VER > 1900
 #error Not supported VS
 #endif
-    // Append Visual Studio symbols cache directory.
-    HKEY debuggerkey;
-    WCHAR symbolCacheDir [MAX_PATH] = {0};
-    // VS2015
-    LSTATUS regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\14.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2013
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\12.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2012
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\11.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2010
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\10.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
-    if (regstatus != ERROR_SUCCESS) // VS2008
-        regstatus = RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\VisualStudio\\9.0\\Debugger", 0, KEY_QUERY_VALUE, &debuggerkey);
+    // Append Visual Studio 2015/2013/2012/2010/2008 symbols cache directory.
+    for (UINT n = 9; n <= 14; ++n) {
+        WCHAR debuggerpath[MAX_PATH] = { 0 };
+        swprintf(debuggerpath, _countof(debuggerpath), L"Software\\Microsoft\\VisualStudio\\%u.0\\Debugger", n);
+        HKEY debuggerkey;
+        WCHAR symbolCacheDir[MAX_PATH] = { 0 };
+        LSTATUS regstatus = RegOpenKeyExW(HKEY_CURRENT_USER, debuggerpath, 0, KEY_QUERY_VALUE, &debuggerkey);
 
-    if (regstatus == ERROR_SUCCESS)
-    {
-        DWORD valuetype;
-        DWORD dirLength = MAX_PATH * sizeof(WCHAR);
-        regstatus = RegQueryValueEx(debuggerkey, L"SymbolCacheDir", NULL, &valuetype, (LPBYTE)&symbolCacheDir, &dirLength);
-        if (regstatus == ERROR_SUCCESS && valuetype == REG_SZ)
-        {
-            path = AppendString(path, L";");
-            path = AppendString(path, symbolCacheDir);
-            path = AppendString(path, L"\\MicrosoftPublicSymbols;");
-            path = AppendString(path, symbolCacheDir);
+        if (regstatus == ERROR_SUCCESS) {
+            DWORD valuetype;
+            DWORD dirLength = MAX_PATH * sizeof(WCHAR);
+            regstatus = RegQueryValueExW(debuggerkey, L"SymbolCacheDir", NULL, &valuetype, (LPBYTE)&symbolCacheDir, &dirLength);
+            if (regstatus == ERROR_SUCCESS && valuetype == REG_SZ) {
+                path = AppendString(path, L";");
+                path = AppendString(path, symbolCacheDir);
+                path = AppendString(path, L"\\MicrosoftPublicSymbols;");
+                path = AppendString(path, symbolCacheDir);
+            }
+            RegCloseKey(debuggerkey);
         }
-        RegCloseKey(debuggerkey);
     }
 
     // Remove any quotes from the path. The symbol handler doesn't like them.
@@ -840,27 +1142,27 @@ VOID VisualLeakDetector::configure ()
         return;
     }
 
-    if (LoadBoolOption(L"AggregateDuplicates", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"AggregateDuplicates", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_AGGREGATE_DUPLICATES;
     }
 
-    if (LoadBoolOption(L"SelfTest", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"SelfTest", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_SELF_TEST;
     }
 
-    if (LoadBoolOption(L"SlowDebuggerDump", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"SlowDebuggerDump", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_SLOW_DEBUGGER_DUMP;
     }
 
-    if (LoadBoolOption(L"StartDisabled", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"StartDisabled", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_START_DISABLED;
     }
 
-    if (LoadBoolOption(L"TraceInternalFrames", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"TraceInternalFrames", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_TRACE_INTERNAL_FRAMES;
     }
 
-    if (LoadBoolOption(L"SkipHeapFreeLeaks", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"SkipHeapFreeLeaks", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_SKIP_HEAPFREE_LEAKS;
     }
 
@@ -921,7 +1223,7 @@ VOID VisualLeakDetector::configure ()
         m_options |= VLD_OPT_SAFE_STACK_WALK;
     }
 
-    if (LoadBoolOption(L"ValidateHeapAllocs", L"", inipath) == TRUE) {
+    if (LoadBoolOption(L"ValidateHeapAllocs", L"", inipath) != FALSE) {
         m_options |= VLD_OPT_VALIDATE_HEAPFREE;
     }
 }
@@ -1765,57 +2067,46 @@ BOOL VisualLeakDetector::detachFromModule (PCWSTR /*modulepath*/, DWORD64 module
 //
 FARPROC VisualLeakDetector::_GetProcAddress (HMODULE module, LPCSTR procname)
 {
-    // See if there is an entry in the patch table that matches the requested
-    // function.
-    UINT tablesize = _countof(g_vld.m_patchTable);
-    for (UINT index = 0; index < tablesize; index++) {
-        moduleentry_t *entry = &g_vld.m_patchTable[index];
-        if ((entry->moduleBase == 0x0) || ((HMODULE)entry->moduleBase != module)) {
-            // This patch table entry is for a different module.
-            continue;
-        }
-
-        patchentry_t *patchentry = entry->patchTable;
-        while(patchentry->importName)
-        {
-            // This patch table entry is for the specified module. If the requested
-            // imports name matches the entry's import name (or ordinal), then
-            // return the address of the replacement instead of the address of the
-            // actual import.
-            if ((SIZE_T)patchentry->importName < (SIZE_T)g_vld.m_vldBase) {
-                // This entry's import name is not a valid pointer to data in
-                // vld.dll. It must be an ordinal value.
-                if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
-                    if (patchentry->original != NULL)
-                        *patchentry->original = g_vld._RGetProcAddress(module, procname);
-                    return (FARPROC)patchentry->replacement;
-                }
+    FARPROC original = g_vld._RGetProcAddress(module, procname);
+    if (original) {
+        // See if there is an entry in the patch table that matches the requested
+        // function.
+        UINT tablesize = _countof(g_vld.m_patchTable);
+        for (UINT index = 0; index < tablesize; index++) {
+            moduleentry_t *entry = &g_vld.m_patchTable[index];
+            if ((entry->moduleBase == 0x0) || ((HMODULE)entry->moduleBase != module)) {
+                // This patch table entry is for a different module.
+                continue;
             }
-            else {
-                __try
-                {
-                    if (strcmp(patchentry->importName, procname) == 0) {
-                        if (patchentry->original != NULL)
-                            *patchentry->original = g_vld._RGetProcAddress(module, procname);
-                        return (FARPROC)patchentry->replacement;
-                    }
-                }
-                __except(FilterFunction(GetExceptionCode()))
-                {
+
+            patchentry_t *patchentry = entry->patchTable;
+            while (patchentry->importName) {
+                // This patch table entry is for the specified module. If the requested
+                // imports name matches the entry's import name (or ordinal), then
+                // return the address of the replacement instead of the address of the
+                // actual import.
+                if (HIWORD(patchentry->importName) == 0) {
+                    // Import name is a function ordinal value.
                     if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
                         if (patchentry->original != NULL)
-                            *patchentry->original = g_vld._RGetProcAddress(module, procname);
+                            *patchentry->original = original;
+                        return (FARPROC)patchentry->replacement;
+                    }
+                } else {
+                    // Import name is a function name value.
+                    if (strcmp(patchentry->importName, procname) == 0) {
+                        if (patchentry->original != NULL)
+                            *patchentry->original = original;
                         return (FARPROC)patchentry->replacement;
                     }
                 }
+                patchentry++;
             }
-            patchentry++;
         }
     }
-
     // The requested function is not a patched function. Just return the real
     // address of the requested function.
-    return g_vld._RGetProcAddress(module, procname);
+    return original;
 }
 
 FARPROC VisualLeakDetector::_RGetProcAddress(HMODULE module, LPCSTR procname)
@@ -1844,57 +2135,47 @@ FARPROC VisualLeakDetector::_RGetProcAddress(HMODULE module, LPCSTR procname)
 //
 FARPROC VisualLeakDetector::_GetProcAddressForCaller(HMODULE module, LPCSTR procname, LPVOID caller)
 {
-	// See if there is an entry in the patch table that matches the requested
-	// function.
-	UINT tablesize = _countof(g_vld.m_patchTable);
-	for (UINT index = 0; index < tablesize; index++) {
-		moduleentry_t *entry = &g_vld.m_patchTable[index];
-		if ((entry->moduleBase == 0x0) || ((HMODULE)entry->moduleBase != module)) {
-			// This patch table entry is for a different module.
-			continue;
-		}
+    FARPROC original = g_vld._RGetProcAddressForCaller(module, procname, caller);
+    if (original) {
+        // See if there is an entry in the patch table that matches the requested
+        // function.
+        UINT tablesize = _countof(g_vld.m_patchTable);
+        for (UINT index = 0; index < tablesize; index++) {
+            moduleentry_t *entry = &g_vld.m_patchTable[index];
+            if ((entry->moduleBase == 0x0) || ((HMODULE)entry->moduleBase != module)) {
+                // This patch table entry is for a different module.
+                continue;
+            }
 
-		patchentry_t *patchentry = entry->patchTable;
-		while (patchentry->importName)
-		{
-			// This patch table entry is for the specified module. If the requested
-			// imports name matches the entry's import name (or ordinal), then
-			// return the address of the replacement instead of the address of the
-			// actual import.
-			if ((SIZE_T)patchentry->importName < (SIZE_T)g_vld.m_vldBase) {
-				// This entry's import name is not a valid pointer to data in
-				// vld.dll. It must be an ordinal value.
-				if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
-					if (patchentry->original != NULL)
-						*patchentry->original = g_vld._RGetProcAddress(module, procname);
-					return (FARPROC)patchentry->replacement;
-				}
-			}
-			else {
-				__try
-				{
-					if (strcmp(patchentry->importName, procname) == 0) {
-						if (patchentry->original != NULL)
-							*patchentry->original = g_vld._RGetProcAddress(module, procname);
-						return (FARPROC)patchentry->replacement;
-					}
-				}
-				__except (FilterFunction(GetExceptionCode()))
-				{
-					if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
-						if (patchentry->original != NULL)
-							*patchentry->original = g_vld._RGetProcAddress(module, procname);
-						return (FARPROC)patchentry->replacement;
-					}
-				}
-			}
-			patchentry++;
-		}
-	}
+            patchentry_t *patchentry = entry->patchTable;
+            while (patchentry->importName) {
+                // This patch table entry is for the specified module. If the requested
+                // imports name matches the entry's import name (or ordinal), then
+                // return the address of the replacement instead of the address of the
+                // actual import.
+                if (HIWORD(patchentry->importName) == 0) {
+                    // Import name is a function ordinal value.
+                    if ((UINT_PTR)patchentry->importName == (UINT_PTR)procname) {
+                        if (patchentry->original != NULL)
+                            *patchentry->original = original;
+                        return (FARPROC)patchentry->replacement;
+                    }
+                } else {
+                    // Import name is a function name value.
+                    if (strcmp(patchentry->importName, procname) == 0) {
+                        if (patchentry->original != NULL)
+                            *patchentry->original = original;
+                        return (FARPROC)patchentry->replacement;
+                    }
+                }
+                patchentry++;
+            }
+        }
+    }
 
-	// The requested function is not a patched function. Just return the real
-	// address of the requested function.
-	return g_vld._RGetProcAddressForCaller(module, procname, caller);
+    // The requested function is not a patched function. Just return the real
+    // address of the requested function.
+    return original;
 }
 
 FARPROC VisualLeakDetector::_RGetProcAddressForCaller(HMODULE module, LPCSTR procname, LPVOID caller)
@@ -1924,13 +2205,13 @@ FARPROC VisualLeakDetector::_RGetProcAddressForCaller(HMODULE module, LPCSTR pro
 //
 //    Returns the value returned by LdrLoadDll.
 //
-NTSTATUS VisualLeakDetector::_LdrLoadDll (LPWSTR searchpath, ULONG flags, unicodestring_t *modulename,
+NTSTATUS VisualLeakDetector::_LdrLoadDll (LPWSTR searchpath, PULONG flags, unicodestring_t *modulename,
     PHANDLE modulehandle)
 {
+    LoaderLock ll;
+
     // Load the DLL
-    g_loaderLock.Enter();
     NTSTATUS status = LdrLoadDll(searchpath, flags, modulename, modulehandle);
-    g_loaderLock.Leave();
 
     if (STATUS_SUCCESS == status)
         g_vld.RefreshModules();
@@ -1941,10 +2222,10 @@ NTSTATUS VisualLeakDetector::_LdrLoadDll (LPWSTR searchpath, ULONG flags, unicod
 NTSTATUS VisualLeakDetector::_LdrLoadDllWin8 (DWORD_PTR reserved, PULONG flags, unicodestring_t *modulename,
                                           PHANDLE modulehandle)
 {
+    LoaderLock ll;
+
     // Load the DLL
-    g_loaderLock.Enter();
     NTSTATUS status = LdrLoadDllWin8(reserved, flags, modulename, modulehandle);
-    g_loaderLock.Leave();
 
     if (STATUS_SUCCESS == status)
         g_vld.RefreshModules();
@@ -1952,15 +2233,48 @@ NTSTATUS VisualLeakDetector::_LdrLoadDllWin8 (DWORD_PTR reserved, PULONG flags, 
     return status;
 }
 
+NTSTATUS VisualLeakDetector::_LdrGetDllHandle(IN PWSTR DllPath OPTIONAL, IN PULONG DllCharacteristics OPTIONAL, IN PUNICODE_STRING DllName, OUT PVOID *DllHandle OPTIONAL)
+{
+    LoaderLock ll;
+
+    NTSTATUS status = LdrGetDllHandle(DllPath, DllCharacteristics, DllName, DllHandle);
+    return status;
+}
+NTSTATUS VisualLeakDetector::_LdrGetProcedureAddress(IN PVOID BaseAddress, IN PANSI_STRING Name, IN ULONG Ordinal, OUT PVOID * ProcedureAddress)
+{
+    LoaderLock ll;
+
+    NTSTATUS status = LdrGetProcedureAddress(BaseAddress, Name, Ordinal, ProcedureAddress);
+    return status;
+}
+
+NTSTATUS VisualLeakDetector::_LdrLockLoaderLock(IN ULONG Flags, OUT PULONG Disposition OPTIONAL, OUT PULONG_PTR Cookie OPTIONAL)
+{
+    return LdrLockLoaderLock(Flags, Disposition, Cookie);
+}
+
+NTSTATUS VisualLeakDetector::_LdrUnlockLoaderLock(IN ULONG Flags, IN ULONG_PTR Cookie OPTIONAL)
+{
+    return LdrUnlockLoaderLock(Flags, Cookie);
+}
+
+NTSTATUS VisualLeakDetector::_LdrUnloadDll(IN PVOID BaseAddress)
+{
+    LoaderLock ll;
+
+    return LdrUnloadDll(BaseAddress);
+}
+
 VOID VisualLeakDetector::RefreshModules()
 {
+    LoaderLock ll;
+
     if (m_options & VLD_OPT_VLDOFF)
         return;
 
     ModuleSet* newmodules = new ModuleSet();
     newmodules->reserve(MODULE_SET_RESERVE);
     {
-        CriticalSectionLocker cs(g_loaderLock);
         // Duplicate code here in this method. Consider refactoring out to another method.
         // Create a new set of all loaded modules, including any newly loaded
         // modules.
@@ -2389,8 +2703,10 @@ void VisualLeakDetector::setupReporting()
     WCHAR      bom = BOM; // Unicode byte-order mark.
 
     //Close the previous report file if needed.
-    if ( m_reportFile )
+    if (m_reportFile) {
         fclose(m_reportFile);
+        m_reportFile = NULL;
+    }
 
     // Reporting to file enabled.
     if (m_options & VLD_OPT_UNICODE_REPORT) {
@@ -2401,7 +2717,7 @@ void VisualLeakDetector::setupReporting()
             // Couldn't open the file.
             m_reportFile = NULL;
         }
-        else {
+        else if (m_reportFile) {
             fwrite(&bom, sizeof(WCHAR), 1, m_reportFile);
             SetReportEncoding(unicode);
         }
@@ -2412,7 +2728,7 @@ void VisualLeakDetector::setupReporting()
             // Couldn't open the file.
             m_reportFile = NULL;
         }
-        else {
+        else if (m_reportFile) {
             SetReportEncoding(ascii);
         }
     }

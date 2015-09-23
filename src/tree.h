@@ -98,7 +98,7 @@ public:
 
     // Copy constructor - The sole purpose of this constructor's existence is
     //   to ensure that trees are not being inadvertently copied.
-    Tree (const Tree& source)
+    Tree<T> (const Tree<T>& source)
     {
         assert(FALSE); // Do not make copies of trees!
     }

@@ -420,7 +420,7 @@ BOOL IsModulePatched (HMODULE importmodule, moduleentry_t patchtable [], UINT ta
     for (UINT index = 0; index < tablesize; index++) {
         moduleentry_t *entry = &patchtable[index];
         found = FindPatch(importmodule, entry);
-        if (found == TRUE) {
+        if (found != FALSE) {
             // Found one of the listed patches installed in the import module.
             return TRUE;
         }
@@ -589,9 +589,10 @@ BOOL PatchImport (HMODULE importmodule, moduleentry_t *patchModule)
                             *patchEntry->original = func;
 
                         DWORD protect;
-                        VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_EXECUTE_READWRITE, &protect);
-                        thunk->u1.Function = (DWORD_PTR)replacement;
-                        VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), protect, &protect);
+                        if (VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_EXECUTE_READWRITE, &protect)) {
+                            thunk->u1.Function = (DWORD_PTR)replacement;
+                            VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), protect, &protect);
+                        }
                     }
                     // The patch has been installed in the import module.
                     result++;
@@ -680,7 +681,7 @@ BOOL PatchModule (HMODULE importmodule, moduleentry_t patchtable [], UINT tables
     DbgTrace(L"dbghelp32.dll %i: PatchModule - ImageDirectoryEntryToDataEx\n", GetCurrentThreadId());
     for (index = 0; index < tablesize; index++) {
         entry = &patchtable[index];
-        if (PatchImport(importmodule, entry) == TRUE) {
+        if (PatchImport(importmodule, entry) != FALSE) {
             patched = TRUE;
         }
     }
@@ -756,7 +757,7 @@ VOID Print (LPWSTR messagew)
     else if (hook_retval == 1)
         __debugbreak();
 
-    if (s_reportToDebugger && (s_reportDelay == TRUE)) {
+    if (s_reportToDebugger && (s_reportDelay != FALSE)) {
         Sleep(10); // Workaround the Visual Studio 6 bug where debug strings are sometimes lost if they're sent too fast.
     }
 }
@@ -885,9 +886,10 @@ VOID RestoreImport (HMODULE importmodule, moduleentry_t* module)
                     // entry with the import's real address. Note that the IAT entry may
                     // be write-protected, so we must first ensure that it is writable.
                     DWORD protect;
-                    VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), PAGE_EXECUTE_READWRITE, &protect);
-                    iate->u1.Function = (DWORD_PTR)original;
-                    VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), protect, &protect);
+                    if (VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), PAGE_EXECUTE_READWRITE, &protect)) {
+                        iate->u1.Function = (DWORD_PTR)original;
+                        VirtualProtect(&iate->u1.Function, sizeof(iate->u1.Function), protect, &protect);
+                    }
                 }
                 result++;
                 iate++;

@@ -308,7 +308,7 @@ unsigned __stdcall threadproc_test (LPVOID param)
     srand(context->seed);
 
     BOOL   allocate_more = TRUE;
-    while (allocate_more == TRUE) {
+    while (allocate_more != FALSE) {
         // Select a random allocation action and a random size.
         action_e action = (action_e)random(numactions - 1);
         SIZE_T size = random(MAXSIZE);
@@ -323,9 +323,6 @@ unsigned __stdcall threadproc_test (LPVOID param)
         // Allocate a block, using recursion to build up a stack of random
         // depth.
         UINT depth = random(MAXDEPTH);
-        if (depth < MINDEPTH) {
-            depth = MINDEPTH;
-        }
         recursivelyallocate(depth, action, size);
 
         // Every once in a while, free a random block.
@@ -346,7 +343,7 @@ unsigned __stdcall threadproc_test (LPVOID param)
         }
     }
 
-    if (context->leaky == TRUE) {
+    if (context->leaky != FALSE) {
         // This is the leaky thread. Randomly select one block to be leaked from
         // each type of allocation action.
         for (USHORT action_index = 0; action_index < numactions; action_index++) {
@@ -371,7 +368,7 @@ unsigned __stdcall threadproc_test (LPVOID param)
     }
 
     // Do a sanity check.
-    if (context->leaky == TRUE) {
+    if (context->leaky != FALSE) {
         assert(total_allocs == (numactions * (1 + NUMDUPLEAKS)));
     }
     else {

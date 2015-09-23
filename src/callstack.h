@@ -79,7 +79,7 @@ class CallStack
 {
 public:
 	CallStack ();
-	~CallStack ();
+	virtual ~CallStack ();
 	static CallStack* Create();
 	// Public APIs - see each function definition for details.
 	VOID clear ();

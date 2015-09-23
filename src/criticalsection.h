@@ -9,8 +9,16 @@
 class CriticalSection
 {
 public:
-	void Initialize() 	{ m_critRegion.OwningThread = 0; InitializeCriticalSection(&m_critRegion); }
-	void Delete() 	  	{ DeleteCriticalSection(&m_critRegion); }
+	void Initialize()
+	{
+		m_critRegion.OwningThread = 0;
+		__try {
+			InitializeCriticalSection(&m_critRegion);
+		} __except (GetExceptionCode() == STATUS_NO_MEMORY ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+			assert(FALSE);
+		}
+	}
+	void Delete()		{ DeleteCriticalSection(&m_critRegion); }
 
 	// enter the section
 	void Enter()
@@ -34,10 +42,10 @@ public:
 	}
 
 	// try enter the section
-	bool TryEnter()   	{ return (TryEnterCriticalSection(&m_critRegion) != 0); }
+	bool TryEnter()		{ return (TryEnterCriticalSection(&m_critRegion) != 0); }
 
 	// leave the critical section
-	void Leave() 	  	{ LeaveCriticalSection(&m_critRegion); }
+	void Leave()		{ LeaveCriticalSection(&m_critRegion); }
 
 private:
 	CRITICAL_SECTION m_critRegion;
@@ -73,6 +81,7 @@ private:
 		}
 	}
 	CriticalSectionLocker(); // not allowed
+	CriticalSectionLocker( const CriticalSectionLocker & ); // not allowed
 	CriticalSectionLocker & operator=( const CriticalSectionLocker & ); // not allowed
 	bool m_leave;
 	CriticalSection& m_critSect;

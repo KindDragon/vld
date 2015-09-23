@@ -28,6 +28,7 @@
 #include "vldheap.h"    // Provides internal new and delete operators.
 #include "vldint.h"     // Provides access to VLD internals.
 #include "cppformat\format.h"
+#include "loaderlock.h"
 
 // Imported global variables.
 extern HANDLE             g_currentProcess;
@@ -65,10 +66,7 @@ CallStack::~CallStack ()
         delete temp;
     }
 
-    if (m_resolved)
-    {
-        delete [] m_resolved;
-    }
+    delete [] m_resolved;
 
     m_resolved = NULL;
     m_resolvedCapacity = 0;
@@ -275,6 +273,8 @@ DWORD CallStack::resolveFunction(SIZE_T programCounter, IMAGEHLP_LINEW64* source
 //
 void CallStack::dump(BOOL showInternalFrames, UINT start_frame) const
 {
+    LoaderLock ll;
+
     // The stack was dumped already
     if (m_resolved)
     {
@@ -360,6 +360,8 @@ void CallStack::dump(BOOL showInternalFrames, UINT start_frame) const
 //
 int CallStack::resolve(BOOL showInternalFrames)
 {
+    LoaderLock ll;
+
     if (m_resolved)
     {
         // already resolved, no need to do it again
@@ -389,9 +391,7 @@ int CallStack::resolve(BOOL showInternalFrames)
 
     const size_t max_line_length = MAXREPORTLENGTH + 1;
     m_resolvedCapacity = m_size * max_line_length;
-    m_resolved = new WCHAR[m_resolvedCapacity];
     const size_t allocedBytes = m_resolvedCapacity * sizeof(WCHAR);
-    ZeroMemory(m_resolved, allocedBytes);
 
     // Iterate through each frame in the call stack.
     for (UINT32 frame = 0; frame < m_size; frame++)
@@ -407,7 +407,6 @@ int CallStack::resolve(BOOL showInternalFrames)
         // When that happens there is nothing we can do except crash.
         DbgTrace(L"dbghelp32.dll %i: SymGetLineFromAddrW64\n", GetCurrentThreadId());
         BOOL foundline = SymGetLineFromAddrW64(g_currentProcess, programCounter, &displacement, &sourceInfo);
-        assert(m_resolved != NULL);
 
         bool isFrameInternal = false;
         if (foundline && !showInternalFrames) {
@@ -439,9 +438,12 @@ int CallStack::resolve(BOOL showInternalFrames)
             displacement, functionName, stack_line, _countof( stack_line ));
 
         if (NumChars >= 0 && !isFrameInternal) {
-            assert(m_resolved != NULL);
             m_resolvedLength += NumChars;
-            wcsncat_s(m_resolved, m_resolvedCapacity, stack_line, NumChars);
+            m_resolved = new WCHAR[m_resolvedCapacity];
+            if (m_resolved) {
+                ZeroMemory(m_resolved, allocedBytes);
+                wcsncat_s(m_resolved, m_resolvedCapacity, stack_line, NumChars);
+            }
         }
     } // end for loop
     return unresolvedFunctionsCount;
@@ -542,6 +544,8 @@ bool CallStack::isInternalModule( const PWSTR filename ) const
 //
 VOID FastCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
 {
+    LoaderLock ll;
+
     UINT32  count = 0;
     UINT_PTR function = context.func;
     if (function != NULL)
@@ -630,6 +634,8 @@ VOID FastCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
 //
 VOID SafeCallStack::getStackTrace (UINT32 maxdepth, const context_t& context)
 {
+    LoaderLock ll;
+
     UINT32 count = 0;
     UINT_PTR function = context.func;
     if (function != NULL)

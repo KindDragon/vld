@@ -36,6 +36,7 @@
 #include "utility.h"     // Provides various utility functions.
 #include "vldheap.h"     // Provides internal new and delete operators.
 #include "vldint.h"      // Provides access to the Visual Leak Detector internals.
+#include "loaderlock.h"
 
 //#define PRINTHOOKCALLS
 //#define PRINTHOOKCALLS2
@@ -1469,6 +1470,8 @@ void* VisualLeakDetector::__recalloc_dbg (_recalloc_dbg_t  p_recalloc_dbg,
 //
 HANDLE VisualLeakDetector::_GetProcessHeap()
 {
+    LoaderLock ll;
+
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
@@ -1502,6 +1505,8 @@ HANDLE VisualLeakDetector::_GetProcessHeap()
 //
 HANDLE VisualLeakDetector::_HeapCreate (DWORD options, SIZE_T initsize, SIZE_T maxsize)
 {
+    LoaderLock ll;
+
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
@@ -1750,10 +1755,9 @@ LPVOID VisualLeakDetector::_RtlReAllocateHeap (HANDLE heap, DWORD flags, LPVOID 
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
-    LPVOID               newmem;
 
     // Reallocate the block.
-    newmem = RtlReAllocateHeap(heap, flags, mem, size);
+    LPVOID newmem = RtlReAllocateHeap(heap, flags, mem, size);
     if ((newmem == NULL) || !g_vld.enabled())
         return newmem;
 
@@ -1802,10 +1806,10 @@ LPVOID VisualLeakDetector::_HeapReAlloc (HANDLE heap, DWORD flags, LPVOID mem, S
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
-    LPVOID               newmem;
+    LPVOID oldmem = mem;
 
     // Reallocate the block.
-    newmem = HeapReAlloc(heap, flags, mem, size);
+    LPVOID newmem = HeapReAlloc(heap, flags, mem, size);
     if ((newmem == NULL) || !g_vld.enabled())
         return newmem;
 
@@ -1835,7 +1839,7 @@ LPVOID VisualLeakDetector::_HeapReAlloc (HANDLE heap, DWORD flags, LPVOID mem, S
 
     tls->context = context;
     tls->heap = heap;
-    tls->blockWithoutGuard = mem;
+    tls->blockWithoutGuard = oldmem;
     tls->newBlockWithoutGuard = newmem;
     tls->size = size;
 
@@ -1937,6 +1941,9 @@ HRESULT VisualLeakDetector::_CoGetMalloc (DWORD context, LPMALLOC *imalloc)
             hr = E_INVALIDARG;
     }
 
+    if (SUCCEEDED(hr)) {
+        g_vld.AddRef();
+    }
     return hr;
 }
 
@@ -2056,7 +2063,14 @@ ULONG VisualLeakDetector::AddRef ()
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
     assert(m_iMalloc != NULL);
-    return (m_iMalloc) ? m_iMalloc->AddRef() : 0;
+    if (m_iMalloc) {
+        // Increment the library reference count to defer unloading the library,
+        // since this function increments the reference count of the IMalloc interface.
+        HMODULE module = NULL;
+        GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)m_vldBase, &module);
+        return m_iMalloc->AddRef();
+    }
+    return 0;
 }
 
 // Alloc - Calls to IMalloc::Alloc end up here. This function is just a wrapper
@@ -2069,7 +2083,7 @@ ULONG VisualLeakDetector::AddRef ()
 //
 //    Returns the value returned by the system's IMalloc::Alloc implementation.
 //
-LPVOID VisualLeakDetector::Alloc (SIZE_T size)
+LPVOID VisualLeakDetector::Alloc (_In_ SIZE_T size)
 {
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
@@ -2108,7 +2122,7 @@ LPVOID VisualLeakDetector::Alloc (SIZE_T size)
 //    Returns the value returned by the system implementation of
 //    IMalloc::DidAlloc.
 //
-INT VisualLeakDetector::DidAlloc (LPVOID mem)
+INT VisualLeakDetector::DidAlloc (_In_opt_ LPVOID mem)
 {
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
@@ -2126,7 +2140,7 @@ INT VisualLeakDetector::DidAlloc (LPVOID mem)
 //
 //    None.
 //
-VOID VisualLeakDetector::Free (LPVOID mem)
+VOID VisualLeakDetector::Free (_In_opt_ LPVOID mem)
 {
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
@@ -2145,7 +2159,7 @@ VOID VisualLeakDetector::Free (LPVOID mem)
 //    Returns the value returned by the system implementation of
 //    IMalloc::GetSize.
 //
-SIZE_T VisualLeakDetector::GetSize (LPVOID mem)
+SIZE_T VisualLeakDetector::GetSize (_In_opt_ LPVOID mem)
 {
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
@@ -2207,7 +2221,7 @@ HRESULT VisualLeakDetector::QueryInterface (REFIID iid, LPVOID *object)
 //    Returns the value returned by the system implementation of
 //    IMalloc::Realloc.
 //
-LPVOID VisualLeakDetector::Realloc (LPVOID mem, SIZE_T size)
+LPVOID VisualLeakDetector::Realloc (_In_opt_ LPVOID mem, _In_ SIZE_T size)
 {
 #ifdef PRINTHOOKCALLS
 	DbgReport(_T(__FUNCTION__ "\n"));
@@ -2248,5 +2262,12 @@ ULONG VisualLeakDetector::Release ()
 	DbgReport(_T(__FUNCTION__ "\n"));
 #endif
     assert(m_iMalloc != NULL);
-    return (m_iMalloc) ? m_iMalloc->Release() : 0;
+    ULONG nCount = 0;
+    if (m_iMalloc) {
+        nCount = m_iMalloc->Release();
+
+        // Decrement the library reference count.
+        FreeLibrary(m_vldBase);
+    }
+    return nCount;
 }
