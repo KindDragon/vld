@@ -435,12 +435,12 @@ LPVOID FindRealCode(LPVOID pCode)
         {
 #ifdef _WIN64
             // RIP relative addressing
-			pCode = *(LPVOID*)((char*)pCode + 6 + *(LONG *)((WORD *)pCode + 1));
+            pCode = *(LPVOID*)((char*)pCode + 6 + *(LONG *)((WORD *)pCode + 1));
 #else
-			DWORD addr = *((DWORD *)((ULONG_PTR)pCode + 2));
-			pCode = *(LPVOID*)(addr);
+            DWORD addr = *((DWORD *)((ULONG_PTR)pCode + 2));
+            pCode = *(LPVOID*)(addr);
 #endif
-			return FindRealCode(pCode);
+            return FindRealCode(pCode);
         }
         if (*(BYTE *)pCode == 0xE9) // jmp
         {
