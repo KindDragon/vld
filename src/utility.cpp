@@ -433,16 +433,14 @@ LPVOID FindRealCode(LPVOID pCode)
     {
         if (*(WORD *)pCode == 0x25ff) // jmp
         {
-            DWORD addr = *((DWORD *)((ULONG_PTR)pCode + 2));
 #ifdef _WIN64
             // RIP relative addressing
-            PBYTE pNextInst = (PBYTE)((ULONG_PTR)pCode + 6);
-            pCode = *(LPVOID*)(pNextInst + addr);
-            return pCode;
+            pCode = *(LPVOID*)((char*)pCode + 6 + *(LONG *)((WORD *)pCode + 1));
 #else
+            DWORD addr = *((DWORD *)((ULONG_PTR)pCode + 2));
             pCode = *(LPVOID*)(addr);
-            return FindRealCode(pCode);
 #endif
+            return FindRealCode(pCode);
         }
         if (*(BYTE *)pCode == 0xE9) // jmp
         {
