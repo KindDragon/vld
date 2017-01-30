@@ -122,10 +122,10 @@ PBYTE NtDllFindParamAddress(const PBYTE pAddress)
     PBYTE ptr = pAddress;
     // Test previous 32 bytes to find the begining address we need to patch
     // for 32bit find => push [ebp][14h] => parameters are pushed to stack
-    // for 64bit find => mov r8,... => parameters are moved to registers r8, rdx, rcx
+    // for 64bit find => mov r8,... => parameters are moved to registers r8, edx, rcx
     while (pAddress - --ptr < 0x20) {
 #ifdef _WIN64
-        if (((ptr[0] & 0x4D) == ptr[0]) && (ptr[1] == 0x8B) && ((ptr[2] & 0xC7) == ptr[2])) {
+        if (((ptr[0] & 0x4D) >= 0x4C) && (ptr[1] == 0x8B) && ((ptr[2] & 0xC7) == ptr[2])) {
 #else
         if ((ptr[0] == 0xFF) && (ptr[1] == 0x75) && (ptr[2] == 0x14)) {
 #endif
@@ -198,9 +198,26 @@ BOOL NtDllPatch(const PBYTE pReturnAddress, NTDLL_LDR_PATCH &NtDllPatch)
                 memset(NtDllPatch.pDetourAddress, 0x90, NtDllPatch.nDetourSize);
 #ifdef _WIN64
                 // Copy original param instructions
-                memcpy(&NtDllPatch.pDetourAddress[0], NtDllPatch.pPatchAddress, nParamSize);
+                memcpy(NtDllPatch.pDetourAddress, NtDllPatch.pPatchAddress, nParamSize);
+
+                BYTE reg = 0x00;
+
+                LPBYTE icall = NtDllPatch.pPatchAddress + nParamSize - (3 /*instruction size*/ + sizeof(DWORD));
+                if ((*(LPDWORD)icall & 0x00'0D'8B'4C) == 0x00'0D'8B'4C) {
+                    // From Windows 10 (1607) calls to the EntryPoint are dispatched through
+                    // __guard_dispatch_icall_fptr. In such case correct the relative address.
+                    DWORD fptr = *(LPDWORD)(icall + 3) + (3 /*instruction size*/ + sizeof(DWORD)) - (DWORD)(NtDllPatch.pDetourAddress - NtDllPatch.pPatchAddress);
+                    memcpy(NtDllPatch.pDetourAddress + nParamSize - sizeof(DWORD), &fptr, sizeof(DWORD));
+
+                    // Additionally in such case the EntryPoint is held in another register
+                    // that was moved to rax. In such case identify the correct register
+                    // holding the EntryPoint
+                    reg = ((*(icall - 3) & 0xF1) == 0x41 ? 0x08 : 0x00) + (*(icall - 1) & 0x07);
+                } else {
+                    reg = ((pCallAddress[0] & 0xF1) == 0x41 ? 0x08 : 0x00) + (pCallAddress[pReturnAddress - pCallAddress - 1] & 0x07);
+                }
+
                 // Copy the register that holds the EntryPoint to r9
-                BYTE reg = ((pCallAddress[0] & 0xF1) == 0x41 ? 0x08 : 0x00) + (pCallAddress[pReturnAddress - pCallAddress - 1] & 0x07);
                 ptr[0] = 0x4C + ((reg & 0x08) ? 0x01 : 0x00);
                 ptr[2] = 0xC8 + (reg & 0x07);
                 memcpy(&NtDllPatch.pDetourAddress[nParamSize], &ptr, _countof(ptr));
