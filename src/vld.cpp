@@ -2419,6 +2419,8 @@ SIZE_T VisualLeakDetector::ReportThreadLeaks( DWORD threadId )
         return 0;
     }
 
+    LoaderLock ll;  // scanning for module names needs ldrloc - getting it proactively to avoid deadlocks later
+
     // Generate a memory leak report for each heap in the process.
     SIZE_T leaksCount = 0;
     CriticalSectionLocker<> cs(g_heapMapLock);
