@@ -20,3 +20,5 @@ src/bin/vld.ini
 /src/tests/vld_ComTest/ComTest_i.c
 *.VC.opendb
 *.VC.db
+
+\.vs
