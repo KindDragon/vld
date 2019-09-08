@@ -29,5 +29,5 @@ We encourage developers who've added their own features, or fixed bugs they've f
 
 * [Source code at GitHub](https://github.com/KindDragon/vld)
 
- [1]: https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=N3QTYHP9LH6UY&lc=GB&item_name=Visual%20Leak%20Detector&currency_code=USD&bn=PP%2dDonationsBF%3abtn_donate_SM%2egif%3aNonHosted
- [2]: https://github.com/KindDragon/vld/blob/master/COPYING.txt
+ [1]: https://github.com/KindDragon/vld/blob/master/COPYING.txt
+ [2]: https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=N3QTYHP9LH6UY&lc=GB&item_name=Visual%20Leak%20Detector&currency_code=USD&bn=PP%2dDonationsBF%3abtn_donate_SM%2egif%3aNonHosted
