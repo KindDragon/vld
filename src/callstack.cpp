@@ -383,8 +383,6 @@ int CallStack::resolve(BOOL showInternalFrames, BOOL skipStartupLeaks)
     IMAGEHLP_LINE64  sourceInfo = { 0 };
     sourceInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
-    //bool skipStartupLeaks = !!(g_vld.GetOptions() & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
-
     // Use static here to increase performance, and avoid heap allocs.
     // It's thread safe because of g_heapMapLock lock.
     static WCHAR stack_line[MAXREPORTLENGTH + 1] = L"";
