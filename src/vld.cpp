@@ -350,6 +350,7 @@ VisualLeakDetector::VisualLeakDetector ()
     m_reportFile     = NULL;
     wcsncpy_s(m_reportFilePath, MAX_PATH, VLD_DEFAULT_REPORT_FILE_NAME, _TRUNCATE);
     m_status         = 0x0;
+    m_optionsLock.Initialize();
 
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     if (ntdll)
@@ -420,7 +421,6 @@ VisualLeakDetector::VisualLeakDetector ()
     m_curAlloc        = 0;
     m_maxAlloc        = 0;
     m_loadedModules   = new ModuleSet();
-    m_optionsLock.Initialize();
     m_modulesLock.Initialize();
     m_selfTestFile    = __FILE__;
     m_selfTestLine    = 0;
@@ -1346,8 +1346,6 @@ tls_t* VisualLeakDetector::getTls ()
 //
 VOID VisualLeakDetector::mapBlock (HANDLE heap, LPCVOID mem, SIZE_T size, bool debugcrtalloc, bool ucrt, DWORD threadId, blockinfo_t* &pblockInfo)
 {
-    CriticalSectionLocker<> cs(g_heapMapLock);
-
     // Record the block's information.
     blockinfo_t* blockinfo = new blockinfo_t();
     blockinfo->callStack = NULL;
@@ -1472,15 +1470,15 @@ VOID VisualLeakDetector::unmapBlock (HANDLE heap, LPCVOID mem, const context_t &
                 Report(L"---------- Block %Iu at " ADDRESSFORMAT L": %Iu bytes ----------\n", alloc_block->serialNumber, mem, alloc_block->size);
                 Report(L"  TID: %u\n", alloc_block->threadId);
                 Report(L"  Call Stack:\n");
-                alloc_block->callStack->dump(m_options & VLD_OPT_TRACE_INTERNAL_FRAMES);
+                alloc_block->callStack->dump(m_options & VLD_OPT_TRACE_INTERNAL_FRAMES, m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
 
                 // Now we need a way to print the current callstack at this point:
-                CallStack* stack_here = CallStack::Create();
+                CallStack* stack_here = CallStack::Create(m_options & VLD_OPT_SAFE_STACK_WALK);
                 stack_here->getStackTrace(m_maxTraceFrames, context);
                 Report(L"Deallocation Call stack.\n");
                 Report(L"---------- Block %Iu at " ADDRESSFORMAT L": %Iu bytes ----------\n", alloc_block->serialNumber, mem, alloc_block->size);
                 Report(L"  Call Stack:\n");
-                stack_here->dump(FALSE);
+                stack_here->dump(FALSE, m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
                 // Now it should be safe to delete our temporary callstack
                 delete stack_here;
                 stack_here = NULL;
@@ -1562,8 +1560,6 @@ VOID VisualLeakDetector::unmapHeap (HANDLE heap)
 VOID VisualLeakDetector::remapBlock (HANDLE heap, LPCVOID mem, LPCVOID newmem, SIZE_T size,
     bool debugcrtalloc, bool ucrt, DWORD threadId, blockinfo_t* &pblockInfo, const context_t &context)
 {
-    CriticalSectionLocker<> cs(g_heapMapLock);
-
     if (newmem != mem) {
         // The block was not reallocated in-place. Instead the old block was
         // freed and a new block allocated to satisfy the new size.
@@ -1913,7 +1909,7 @@ SIZE_T VisualLeakDetector::reportLeaks (heapinfo_t* heapinfo, bool &firstLeak, S
         else
             Report(L"  Call Stack:\n");
         if (info->callStack)
-            info->callStack->dump(m_options & VLD_OPT_TRACE_INTERNAL_FRAMES);
+            info->callStack->dump(m_options & VLD_OPT_TRACE_INTERNAL_FRAMES, m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
 
         // Dump the data in the user data section of the memory block.
         if (m_maxDataDump != 0) {
@@ -2709,6 +2705,7 @@ void VisualLeakDetector::SetReportOptions(UINT32 option_mask, CONST WCHAR *filen
     else if ( m_reportFile ) { //Close the previous report file if needed.
         fclose(m_reportFile);
         m_reportFile = NULL;
+        SetReportFile(m_reportFile, m_options & VLD_OPT_REPORT_TO_DEBUGGER, m_options & VLD_OPT_REPORT_TO_STDOUT);
     }
 }
 
@@ -2747,22 +2744,16 @@ void VisualLeakDetector::setupReporting()
         // Unicode data encoding has been enabled. Write the byte-order
         // mark before anything else gets written to the file. Open the
         // file for binary writing.
-        if (_wfopen_s(&m_reportFile, m_reportFilePath, L"wb") == EINVAL) {
-            // Couldn't open the file.
-            m_reportFile = NULL;
-        }
-        else if (m_reportFile) {
+        m_reportFile = _wfsopen(m_reportFilePath, L"wb", _SH_DENYWR);
+        if (m_reportFile) {
             fwrite(&bom, sizeof(WCHAR), 1, m_reportFile);
             SetReportEncoding(unicode);
         }
     }
     else {
         // Open the file in text mode for ASCII output.
-        if (_wfopen_s(&m_reportFile, m_reportFilePath, L"w") == EINVAL) {
-            // Couldn't open the file.
-            m_reportFile = NULL;
-        }
-        else if (m_reportFile) {
+        m_reportFile = _wfsopen(m_reportFilePath, L"w", _SH_DENYWR);
+        if (m_reportFile) {
             SetReportEncoding(ascii);
         }
     }
@@ -2818,9 +2809,9 @@ const wchar_t* VisualLeakDetector::GetAllocationResolveResults(void* alloc, BOOL
     blockinfo_t* info = getAllocationBlockInfo(alloc);
     if (info != NULL)
     {
-        int unresolvedFunctionsCount = info->callStack->resolve(showInternalFrames);
+        int unresolvedFunctionsCount = info->callStack->resolve(showInternalFrames, m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
         _ASSERT(unresolvedFunctionsCount == 0);
-        return info->callStack->getResolvedCallstack(showInternalFrames);
+        return info->callStack->getResolvedCallstack(showInternalFrames, m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
     }
     return NULL;
 }
@@ -2870,7 +2861,7 @@ int VisualLeakDetector::resolveStacks(heapinfo_t* heapinfo)
         // Dump the call stack.
         if (info->callStack)
         {
-            unresolvedFunctionsCount += info->callStack->resolve(m_options & VLD_OPT_TRACE_INTERNAL_FRAMES);
+            unresolvedFunctionsCount += info->callStack->resolve(m_options & VLD_OPT_TRACE_INTERNAL_FRAMES, m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
             if ((m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS) && info->callStack->isCrtStartupAlloc()) {
                 info->reported = true;
                 continue;
@@ -2925,6 +2916,11 @@ CaptureContext::~CaptureContext() {
         return;
 
     if ((m_tls->blockWithoutGuard) && (!IsExcludedModule())) {
+        CallStack* callstack = CallStack::Create(g_vld.m_options & VLD_OPT_SAFE_STACK_WALK);
+        callstack->getStackTrace(g_vld.m_maxTraceFrames, m_tls->context);
+
+        CriticalSectionLocker<> cs(g_heapMapLock);
+
         blockinfo_t* pblockInfo = NULL;
         if (m_tls->newBlockWithoutGuard == NULL) {
             g_vld.mapBlock(m_tls->heap,
@@ -2946,8 +2942,6 @@ CaptureContext::~CaptureContext() {
                 pblockInfo, m_tls->context);
         }
 
-        CallStack* callstack = CallStack::Create();
-        callstack->getStackTrace(g_vld.m_maxTraceFrames, m_tls->context);
         pblockInfo->callStack.reset(callstack);
     }
 

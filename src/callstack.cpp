@@ -90,10 +90,10 @@ CallStack::~CallStack ()
     m_resolvedLength = 0;
 }
 
-CallStack* CallStack::Create()
+CallStack* CallStack::Create(BOOL safe_stack_walk)
 {
     CallStack* result = NULL;
-    if (g_vld.GetOptions() & VLD_OPT_SAFE_STACK_WALK) {
+    if (safe_stack_walk) {
         result = new SafeCallStack();
     }
     else {
@@ -330,10 +330,10 @@ bool CallStack::isCrtStartupAlloc()
 //
 //    None.
 //
-void CallStack::dump(BOOL showInternalFrames)
+void CallStack::dump(BOOL showInternalFrames, BOOL skipStartupLeaks)
 {
     if (!m_resolved) {
-        resolve(showInternalFrames);
+        resolve(showInternalFrames, skipStartupLeaks);
     }
 
     // The stack was reoslved already
@@ -356,7 +356,7 @@ void CallStack::dump(BOOL showInternalFrames)
 //
 //    None.
 //
-int CallStack::resolve(BOOL showInternalFrames)
+int CallStack::resolve(BOOL showInternalFrames, BOOL skipStartupLeaks)
 {
     if (m_resolved)
     {
@@ -382,8 +382,6 @@ int CallStack::resolve(BOOL showInternalFrames)
     int unresolvedFunctionsCount = 0;
     IMAGEHLP_LINE64  sourceInfo = { 0 };
     sourceInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-
-    bool skipStartupLeaks = !!(g_vld.GetOptions() & VLD_OPT_SKIP_CRTSTARTUP_LEAKS);
 
     // Use static here to increase performance, and avoid heap allocs.
     // It's thread safe because of g_heapMapLock lock.
@@ -467,9 +465,9 @@ int CallStack::resolve(BOOL showInternalFrames)
     return unresolvedFunctionsCount;
 }
 
-const WCHAR* CallStack::getResolvedCallstack( BOOL showinternalframes )
+const WCHAR* CallStack::getResolvedCallstack( BOOL showinternalframes, BOOL skipStartupLeaks)
 {
-    resolve(showinternalframes);
+    resolve(showinternalframes, skipStartupLeaks);
     return m_resolved;
 }
 
