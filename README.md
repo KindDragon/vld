@@ -16,17 +16,16 @@ Visual Leak Detector is [licensed][3] free of charge as a service to the Windows
 
 ## Documentation
 
-Read the documentation at [http://vld.codeplex.com/documentation](http://vld.codeplex.com/documentation)
+Read the documentation at [https://github.com/KindDragon/vld/wiki](https://github.com/KindDragon/vld/wiki)
 
 ## Contributing
 
 We encourage developers who've added their own features, or fixed bugs they've found, to contribute to the project. The full version-controlled source tree is available publicly via Git at the URL below. Feel free to clone from this URL and submit patches for consideration for inclusion in future versions. You can also issue pull requests for changes that you've made and would like to share.
 
-* [Source code at Codeplex](http://vld.codeplex.com/SourceControl/BrowseLatest)
-* [Source code at GitHub](https://github.com/KindDragon/vld)
+* [Source code](https://github.com/KindDragon/vld)
 
 Copyright © 2005-2017 VLD Team
 
- [1]: http://vld.codeplex.com/discussions
+ [1]: https://github.com/KindDragon/vld/wiki
  [2]: https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=N3QTYHP9LH6UY&lc=GB&item_name=Visual%20Leak%20Detector&currency_code=USD&bn=PP%2dDonationsBF%3abtn_donate_SM%2egif%3aNonHosted
- [3]: http://vld.codeplex.com/license
+ [3]: https://github.com/KindDragon/vld/blob/master/COPYING.txt
