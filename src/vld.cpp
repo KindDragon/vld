@@ -42,6 +42,9 @@
 #define HEAP_MAP_RESERVE    2   // Usually there won't be more than a few heaps in the process, so this should be small.
 #define MODULE_SET_RESERVE  16  // There are likely to be several modules loaded in the process.
 
+#define PRESERVE_LASTERROR      // if defined preserves status of GetLastError
+#define PRESERVE_WSAERROR       // if defined preserves status of WSAGetLastError
+
 // Imported global variables.
 extern vldblockheader_t *g_vldBlockList;
 extern HANDLE            g_vldHeap;
@@ -1293,9 +1296,25 @@ SIZE_T VisualLeakDetector::eraseDuplicates (const BlockMap::Iterator &element, S
 //
 tls_t* VisualLeakDetector::getTls ()
 {
+#if defined(PRESERVE_WSAERROR)
+    // save winsock last error because TlsGetValue resets it
+    int wsaerrpre = WSAGetLastError(); 
+#endif    
+#if defined(PRESERVE_LASTERROR)
+    // save last error because TlsGetValue resets it
+    int errpre = GetLastError(); 
+#endif    
+
     // Get the pointer to this thread's thread local storage structure.
     tls_t* tls = (tls_t*)TlsGetValue(m_tlsIndex);
     assert(GetLastError() == ERROR_SUCCESS);
+
+#if defined(PRESERVE_LASTERROR)
+    SetLastError(errpre); // restore previous state of error
+#endif    
+#if defined(PRESERVE_WSAERROR)
+    WSASetLastError(wsaerrpre); // restore previous state of ws error
+#endif    
 
     if (tls == NULL) {
         DWORD threadId = GetCurrentThreadId();
