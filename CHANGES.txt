@@ -1,7 +1,12 @@
-Visual Leak Detector (VLD) Version 2.5.6
+Visual Leak Detector (VLD) Version 2.5.7
 
 
   Change Log / Release Notes
+
+2.5.7 (10 March 2021)
+----------------------------
+  Bugs Fixed:
+  + Fix AV in FindRealCode
 
 2.5.6 (16 October 2020)
 ----------------------------
