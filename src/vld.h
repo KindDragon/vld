@@ -341,7 +341,7 @@ __declspec(dllexport) int VLDResolveCallstacks();
 #define VLDGetOptions() (0)
 #define VLDGetReportFilename(a)
 #define VLDSetOptions(a, b, c)
-#define VLDSetReportHook(a, b)
+#define VLDSetReportHook(a, b) (-1)
 #define VLDSetModulesList(a)
 #define VLDGetModulesList(a, b) (FALSE)
 #define VLDSetReportOptions(a, b)
