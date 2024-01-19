@@ -539,6 +539,8 @@ UINT CallStack::isCrtStartupFunction( LPCWSTR functionName ) const
         || (wcscmp(functionName, L"_Getctype") == 0)
         || (wcscmp(functionName, L"std::_Facet_Register") == 0)
         || endWith(functionName, len, L">::_Getcat")
+        // Fix
+        || endWith(functionName, len, L"initterm")
         ) {
         return CALLSTACK_STATUS_STARTUPCRT;
     }
