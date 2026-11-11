@@ -2870,7 +2870,6 @@ class LeakSymbolsHeapMapLock
 public:
     LeakSymbolsHeapMapLock(VisualLeakDetector& vld, bool loadSymbols, DWORD threadId = (DWORD)-1)
         : m_nested(g_heapMapLock.IsOwnedByCurrentThread())
-        , m_previousNoSymbolLoadThreadId(InterlockedCompareExchange(&g_noSymbolLoadThreadId, 0, 0))
     {
         if (!m_nested) {
 #if defined(_M_ARM64)
@@ -2892,7 +2891,8 @@ public:
                 VisualLeakDetector::loadModuleSymbols(pages);
             }
         }
-        InterlockedExchange(&g_noSymbolLoadThreadId, static_cast<LONG>(GetCurrentThreadId()));
+        m_previousNoSymbolLoadThreadId =
+            InterlockedExchange(&g_noSymbolLoadThreadId, static_cast<LONG>(GetCurrentThreadId()));
     }
 
     ~LeakSymbolsHeapMapLock()
@@ -2906,7 +2906,7 @@ public:
 
 private:
     const bool m_nested;
-    const LONG m_previousNoSymbolLoadThreadId;
+    LONG m_previousNoSymbolLoadThreadId;
     LeakSymbolsHeapMapLock(const LeakSymbolsHeapMapLock&);
     LeakSymbolsHeapMapLock& operator=(const LeakSymbolsHeapMapLock&);
 };
