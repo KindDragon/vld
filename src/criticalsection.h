@@ -37,6 +37,12 @@ public:
 		return m_ownerThreadId == GetCurrentThreadId();
 	}
 
+	// Unlike IsLockedByCurrentThread, stays true after a nested Leave.
+	bool IsOwnedByCurrentThread()
+	{
+		return (DWORD)(ULONG_PTR)m_critRegion.OwningThread == GetCurrentThreadId();
+	}
+
 	// try enter the section
 	bool TryEnter()
 	{

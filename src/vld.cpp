@@ -2862,41 +2862,51 @@ extern "C" bool VldSymbolLoadForbidden(void)
 // load can bring new modules, so the check repeats under the lock; whatever is
 // still deferred after that is not loaded under the lock but shown as an
 // address. g_leakQueryLock keeps a second caller from holding g_heapMapLock
-// while it waits for g_DbgHelp, which a loading thread holds.
+// while it waits for g_DbgHelp, which a loading thread holds. A query from a
+// thread that already owns g_heapMapLock (e.g. a report hook) loads nothing
+// and takes no lock.
 class LeakSymbolsHeapMapLock
 {
 public:
     LeakSymbolsHeapMapLock(VisualLeakDetector& vld, bool loadSymbols, DWORD threadId = (DWORD)-1)
+        : m_nested(g_heapMapLock.IsOwnedByCurrentThread())
+        , m_previousNoSymbolLoadThreadId(InterlockedCompareExchange(&g_noSymbolLoadThreadId, 0, 0))
     {
+        if (!m_nested) {
 #if defined(_M_ARM64)
-        // getFunctionName does not use dbghelp during the teardown report.
-        if (VldArm64InTeardownReport())
-            loadSymbols = false;
+            // getFunctionName does not use dbghelp during the teardown report.
+            if (VldArm64InTeardownReport())
+                loadSymbols = false;
 #endif
-        g_leakQueryLock.Enter();
-        const int maxAttempts = 8;
-        for (int attempt = 1; ; attempt++) {
-            g_heapMapLock.Enter();
-            if (!loadSymbols)
-                break;
-            Set<UINT_PTR> pages;
-            vld.collectLeakPages(pages, threadId);
-            if (attempt == maxAttempts || VisualLeakDetector::areModuleSymbolsLoaded(pages))
-                break;
-            g_heapMapLock.Leave();
-            VisualLeakDetector::loadModuleSymbols(pages);
+            g_leakQueryLock.Enter();
+            const int maxAttempts = 8;
+            for (int attempt = 1; ; attempt++) {
+                g_heapMapLock.Enter();
+                if (!loadSymbols)
+                    break;
+                Set<UINT_PTR> pages;
+                vld.collectLeakPages(pages, threadId);
+                if (attempt == maxAttempts || VisualLeakDetector::areModuleSymbolsLoaded(pages))
+                    break;
+                g_heapMapLock.Leave();
+                VisualLeakDetector::loadModuleSymbols(pages);
+            }
         }
         InterlockedExchange(&g_noSymbolLoadThreadId, static_cast<LONG>(GetCurrentThreadId()));
     }
 
     ~LeakSymbolsHeapMapLock()
     {
-        InterlockedExchange(&g_noSymbolLoadThreadId, 0);
-        g_heapMapLock.Leave();
-        g_leakQueryLock.Leave();
+        InterlockedExchange(&g_noSymbolLoadThreadId, m_previousNoSymbolLoadThreadId);
+        if (!m_nested) {
+            g_heapMapLock.Leave();
+            g_leakQueryLock.Leave();
+        }
     }
 
 private:
+    const bool m_nested;
+    const LONG m_previousNoSymbolLoadThreadId;
     LeakSymbolsHeapMapLock(const LeakSymbolsHeapMapLock&);
     LeakSymbolsHeapMapLock& operator=(const LeakSymbolsHeapMapLock&);
 };
