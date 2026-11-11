@@ -2753,17 +2753,21 @@ bool VisualLeakDetector::isFunctionIgnored(LPCWSTR functionName)
     return g_vld.m_ignoreFunctions->find(functioninfo) != g_vld.m_ignoreFunctions->end();
 }
 
-// loadLeakSymbols - Makes dbghelp load the symbols of every module that appears
-//   in the call stack of an unreported leak, without holding g_heapMapLock.
+// Leak counting and reporting resolve call stacks while holding g_heapMapLock,
+// which every allocation takes. dbghelp loads a module's symbols on first use
+// and that load can need the loader (a symbol server path loads symsrv,
+// wininet and their dependencies), while a thread in DLL_THREAD_ATTACH holds
+// the loader lock and waits for g_heapMapLock when it allocates: a deadlock.
+// So the symbols of every module in the unreported leaks' call stacks are
+// loaded first, holding neither g_heapMapLock nor the loader lock (with the
+// loader lock held, LoadLibrary waits for threads that are initializing and
+// need that lock), and the locked pass only does in-memory lookups.
+
+// collectLeakPages - Collects the code pages of the unreported leaks' call
+//   stacks; one address per page is enough to name every module. Call with
+//   g_heapMapLock held.
 //
-//   Leak counting and reporting resolve call stacks while holding
-//   g_heapMapLock, which every allocation takes. dbghelp loads a module's
-//   symbols on first use and that load can take the loader lock (a symbol
-//   server path loads symsrv, wininet and their dependencies). A thread in
-//   DLL_THREAD_ATTACH holds the loader lock and, when it allocates, waits for
-//   g_heapMapLock: a deadlock. Loading the symbols here first leaves only
-//   in-memory lookups for the locked pass. Modules first seen in leaks
-//   allocated after this runs are still loaded under the lock.
+//  - pages (OUT): The code pages.
 //
 //  - threadId (IN): Only leaks allocated by this thread, or all leaks if -1.
 //
@@ -2771,31 +2775,60 @@ bool VisualLeakDetector::isFunctionIgnored(LPCWSTR functionName)
 //
 //    None.
 //
-VOID VisualLeakDetector::loadLeakSymbols (DWORD threadId)
+VOID VisualLeakDetector::collectLeakPages (Set<UINT_PTR>& pages, DWORD threadId)
 {
-#if defined(_M_ARM64)
-    // getFunctionName does not use dbghelp during the teardown report.
-    if (VldArm64InTeardownReport())
-        return;
-#endif
-    // One program counter per code page is enough to name every module.
-    Set<UINT_PTR> pages;
-    {
-        CriticalSectionLocker<> cs(g_heapMapLock);
-        for (HeapMap::Iterator heapit = m_heapMap->begin(); heapit != m_heapMap->end(); ++heapit) {
-            BlockMap* blockmap = &(*heapit).second->blockMap;
-            for (BlockMap::Iterator blockit = blockmap->begin(); blockit != blockmap->end(); ++blockit) {
-                blockinfo_t* info = (*blockit).second;
-                if (info->reported || info->callStack == NULL)
-                    continue;
-                if (threadId != ((DWORD)-1) && info->threadId != threadId)
-                    continue;
-                for (UINT32 frame = 0; frame < info->callStack->size(); frame++)
-                    pages.insert((*info->callStack)[frame] & ~(UINT_PTR)0xFFF);
-            }
+    for (HeapMap::Iterator heapit = m_heapMap->begin(); heapit != m_heapMap->end(); ++heapit) {
+        BlockMap* blockmap = &(*heapit).second->blockMap;
+        for (BlockMap::Iterator blockit = blockmap->begin(); blockit != blockmap->end(); ++blockit) {
+            blockinfo_t* info = (*blockit).second;
+            if (info->reported || info->callStack == NULL)
+                continue;
+            if (threadId != ((DWORD)-1) && info->threadId != threadId)
+                continue;
+            for (UINT32 frame = 0; frame < info->callStack->size(); frame++)
+                pages.insert((*info->callStack)[frame] & ~(UINT_PTR)0xFFF);
         }
     }
+}
 
+// areModuleSymbolsLoaded - Checks, without loading anything, that dbghelp is
+//   done with the deferred symbol load of the module of every page.
+//
+//  - pages (IN): Code pages from collectLeakPages.
+//
+//  Return Value:
+//
+//    TRUE if no module still has deferred symbols.
+//
+BOOL VisualLeakDetector::areModuleSymbolsLoaded (const Set<UINT_PTR>& pages)
+{
+    Set<HMODULE> modules;
+    for (Set<UINT_PTR>::Iterator it = pages.begin(); it != pages.end(); ++it) {
+        HMODULE module = GetCallingModule(*it);
+        if (module == NULL || modules.find(module) != modules.end())
+            continue;
+        modules.insert(module);
+        IMAGEHLP_MODULEW64 moduleInfo = { 0 };
+        moduleInfo.SizeOfStruct = sizeof(moduleInfo);
+        CriticalSectionLocker<DbgHelp> locker(g_DbgHelp);
+        if (g_DbgHelp.SymGetModuleInfoW64(g_currentProcess, (DWORD64)module, &moduleInfo, locker) &&
+            moduleInfo.SymType == SymDeferred)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+// loadModuleSymbols - Makes dbghelp load the symbols of the module of every
+//   page. Call without g_heapMapLock or the loader lock held.
+//
+//  - pages (IN): Code pages from collectLeakPages.
+//
+//  Return Value:
+//
+//    None.
+//
+VOID VisualLeakDetector::loadModuleSymbols (const Set<UINT_PTR>& pages)
+{
     Set<HMODULE> modules;
     BYTE symbolBuffer[sizeof(SYMBOL_INFOW) + MAX_SYMBOL_NAME_SIZE] = { 0 };
     SYMBOL_INFOW* symbol = (SYMBOL_INFOW*)symbolBuffer;
@@ -2812,6 +2845,43 @@ VOID VisualLeakDetector::loadLeakSymbols (DWORD threadId)
     }
 }
 
+// Holds g_heapMapLock, entered only once the symbols of every module in the
+// unreported leaks' call stacks are loaded. Leaks allocated while the symbols
+// load can bring new modules, so the check repeats under the lock.
+class LeakSymbolsHeapMapLock
+{
+public:
+    LeakSymbolsHeapMapLock(VisualLeakDetector& vld, bool loadSymbols, DWORD threadId = (DWORD)-1)
+    {
+#if defined(_M_ARM64)
+        // getFunctionName does not use dbghelp during the teardown report.
+        if (VldArm64InTeardownReport())
+            loadSymbols = false;
+#endif
+        const int maxAttempts = 8;
+        for (int attempt = 1; ; attempt++) {
+            g_heapMapLock.Enter();
+            if (!loadSymbols)
+                return;
+            Set<UINT_PTR> pages;
+            vld.collectLeakPages(pages, threadId);
+            if (attempt == maxAttempts || VisualLeakDetector::areModuleSymbolsLoaded(pages))
+                return;
+            g_heapMapLock.Leave();
+            VisualLeakDetector::loadModuleSymbols(pages);
+        }
+    }
+
+    ~LeakSymbolsHeapMapLock()
+    {
+        g_heapMapLock.Leave();
+    }
+
+private:
+    LeakSymbolsHeapMapLock(const LeakSymbolsHeapMapLock&);
+    LeakSymbolsHeapMapLock& operator=(const LeakSymbolsHeapMapLock&);
+};
+
 SIZE_T VisualLeakDetector::GetLeaksCount()
 {
     if (m_options & VLD_OPT_VLDOFF) {
@@ -2819,11 +2889,9 @@ SIZE_T VisualLeakDetector::GetLeaksCount()
         return 0;
     }
 
-    loadLeakSymbols();
-
     SIZE_T leaksCount = 0;
     // Generate a memory leak report for each heap in the process.
-    CriticalSectionLocker<> cs(g_heapMapLock);
+    LeakSymbolsHeapMapLock cs(*this, (m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS) != 0);
     for (HeapMap::Iterator heapit = m_heapMap->begin(); heapit != m_heapMap->end(); ++heapit) {
         HANDLE heap = (*heapit).first;
         UNREFERENCED_PARAMETER(heap);
@@ -2840,11 +2908,9 @@ SIZE_T VisualLeakDetector::GetThreadLeaksCount(DWORD threadId)
         return 0;
     }
 
-    loadLeakSymbols(threadId);
-
     SIZE_T leaksCount = 0;
     // Generate a memory leak report for each heap in the process.
-    CriticalSectionLocker<> cs(g_heapMapLock);
+    LeakSymbolsHeapMapLock cs(*this, (m_options & VLD_OPT_SKIP_CRTSTARTUP_LEAKS) != 0, threadId);
     for (HeapMap::Iterator heapit = m_heapMap->begin(); heapit != m_heapMap->end(); ++heapit) {
         HANDLE heap = (*heapit).first;
         UNREFERENCED_PARAMETER(heap);
@@ -2861,11 +2927,9 @@ SIZE_T VisualLeakDetector::ReportLeaks( )
         return 0;
     }
 
-    loadLeakSymbols();
-
     // Generate a memory leak report for each heap in the process.
     SIZE_T leaksCount = 0;
-    CriticalSectionLocker<> cs(g_heapMapLock);
+    LeakSymbolsHeapMapLock cs(*this, true);
     bool firstLeak = true;
     Set<blockinfo_t*> aggregatedLeaks;
     for (HeapMap::Iterator heapit = m_heapMap->begin(); heapit != m_heapMap->end(); ++heapit) {
@@ -2884,11 +2948,9 @@ SIZE_T VisualLeakDetector::ReportThreadLeaks( DWORD threadId )
         return 0;
     }
 
-    loadLeakSymbols(threadId);
-
     // Generate a memory leak report for each heap in the process.
     SIZE_T leaksCount = 0;
-    CriticalSectionLocker<> cs(g_heapMapLock);
+    LeakSymbolsHeapMapLock cs(*this, true, threadId);
     bool firstLeak = true;
     Set<blockinfo_t*> aggregatedLeaks;
     for (HeapMap::Iterator heapit = m_heapMap->begin(); heapit != m_heapMap->end(); ++heapit) {

@@ -9,10 +9,11 @@
 //
 // This test makes that ordering deterministic. A dbghelp callback on the
 // deferred symbol load of the helper DLL starts a thread whose
-// DLL_THREAD_ATTACH in the helper allocates, waits until that thread is inside
-// thread attach (holding the loader lock), then calls LoadLibrary, standing in
-// for symsrv. If VLD is inside g_heapMapLock at that point, neither thread can
-// proceed; a watchdog reports the deadlock and terminates the process.
+// DLL_THREAD_ATTACH in the helper allocates, gives that thread up to 2 s to
+// get inside thread attach (holding the loader lock), then calls LoadLibrary,
+// standing in for symsrv. If VLD is inside g_heapMapLock at that point,
+// neither thread can proceed; a watchdog reports the deadlock and terminates
+// the process. If VLD holds the loader lock instead, the thread simply waits.
 
 #include <windows.h>
 #include <stdio.h>
@@ -49,6 +50,7 @@ HANDLE g_done = NULL;
 volatile LONG g_callbackArmed = 0;
 volatile LONG g_callbackFired = 0;
 volatile LONG g_inLoadLibrary = 0;
+HANDLE g_thread = NULL;
 
 void WriteStdout(const char* text)
 {
@@ -60,14 +62,14 @@ DWORD WINAPI Watchdog(LPVOID)
 {
     if (WaitForSingleObject(g_done, WATCHDOG_MS) == WAIT_TIMEOUT)
     {
-        char state[256];
-        sprintf_s(state, "main thread: in VLDGetLeaksCount -> dbghelp deferred symbol load -> LoadLibrary: %s\n"
-            "new thread: in helper DLL_THREAD_ATTACH (loader lock held) -> malloc -> VLD hook: %s\n",
-            InterlockedCompareExchange(&g_inLoadLibrary, 0, 0) ? "yes" : "no",
-            g_isInThreadAttachAlloc() ? "yes" : "no");
-        WriteStdout(state);
+        WriteStdout(InterlockedCompareExchange(&g_inLoadLibrary, 0, 0) ?
+            "main thread: in VLDGetLeaksCount -> dbghelp deferred symbol load -> LoadLibrary: yes\n" :
+            "main thread: in VLDGetLeaksCount -> dbghelp deferred symbol load -> LoadLibrary: no\n");
+        WriteStdout(g_isInThreadAttachAlloc() ?
+            "new thread: in helper DLL_THREAD_ATTACH (loader lock held) -> malloc -> VLD hook: yes\n" :
+            "new thread: in helper DLL_THREAD_ATTACH (loader lock held) -> malloc -> VLD hook: no\n");
         // ExitProcess would need the loader lock, which is part of the deadlock.
-        WriteStdout("FAIL: DEADLOCK - VLD resolved symbols while holding g_heapMapLock\n");
+        WriteStdout("FAIL: DEADLOCK in VLDGetLeaksCount while dbghelp loaded symbols\n");
         TerminateProcess(GetCurrentProcess(), 3);
     }
     return 0;
@@ -90,13 +92,16 @@ BOOL CALLBACK SymbolCallback(HANDLE, ULONG action, ULONG64 data, ULONG64)
     InterlockedExchange(&g_callbackFired, 1);
 
     // A thread that holds the loader lock (DLL_THREAD_ATTACH) and allocates.
+    // If VLD holds the loader lock here, the thread cannot enter thread attach
+    // until VLD is done, which is not a deadlock: wait only briefly.
     g_armThreadAttach(g_inThreadAttach);
-    HANDLE thread = CreateThread(NULL, 0, NewThread, NULL, 0, NULL);
-    if (thread == NULL || WaitForSingleObject(g_inThreadAttach, 10000) != WAIT_OBJECT_0)
+    g_thread = CreateThread(NULL, 0, NewThread, NULL, 0, NULL);
+    if (g_thread == NULL)
     {
-        WriteStdout("FAIL: helper DLL_THREAD_ATTACH did not run\n");
+        WriteStdout("FAIL: CreateThread failed\n");
         TerminateProcess(GetCurrentProcess(), 2);
     }
+    WaitForSingleObject(g_inThreadAttach, 2000);
 
     // What symsrv/wininet do while loading symbols: take the loader lock.
     InterlockedExchange(&g_inLoadLibrary, 1);
@@ -104,8 +109,6 @@ BOOL CALLBACK SymbolCallback(HANDLE, ULONG action, ULONG64 data, ULONG64)
     InterlockedExchange(&g_inLoadLibrary, 0);
     if (version != NULL)
         FreeLibrary(version);
-    WaitForSingleObject(thread, INFINITE);
-    CloseHandle(thread);
     return FALSE;
 }
 }
@@ -148,6 +151,11 @@ int main()
 
     InterlockedExchange(&g_callbackArmed, 1);
     SIZE_T leaks = VLDGetLeaksCount();
+    if (g_thread != NULL)
+    {
+        WaitForSingleObject(g_thread, INFINITE);
+        CloseHandle(g_thread);
+    }
     SetEvent(g_done);
     WaitForSingleObject(watchdog, INFINITE);
 
