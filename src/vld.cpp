@@ -52,6 +52,7 @@ HANDLE           g_currentProcess; // Pseudo-handle for the current process.
 HANDLE           g_currentThread;  // Pseudo-handle for the current thread.
 HANDLE           g_processHeap;    // Handle to the process's heap (COM allocations come from here).
 CriticalSection  g_heapMapLock;    // Serializes access to the heap and block maps.
+CriticalSection  g_leakQueryLock;  // Serializes leak counting and reporting (see LeakSymbolsHeapMapLock).
 ReportHookSet*   g_pReportHooks;
 DbgHelp g_DbgHelp;
 ImageDirectoryEntries g_Ide;
@@ -422,6 +423,7 @@ VisualLeakDetector::VisualLeakDetector ()
     LoaderLock ll;
 
     g_heapMapLock.Initialize();
+    g_leakQueryLock.Initialize();
     g_vldHeap         = HeapCreate(0x0, 0, 0);
     g_vldHeapLock.Initialize();
     g_pReportHooks    = new ReportHookSet;
@@ -828,6 +830,7 @@ VisualLeakDetector::~VisualLeakDetector ()
     m_modulesLock.Delete();
     m_tlsLock.Delete();
     g_heapMapLock.Delete();
+    g_leakQueryLock.Delete();
     g_vldHeapLock.Delete();
 
     if (m_tlsIndex != TLS_OUT_OF_INDEXES) {
@@ -2845,9 +2848,21 @@ VOID VisualLeakDetector::loadModuleSymbols (const Set<UINT_PTR>& pages)
     }
 }
 
-// Holds g_heapMapLock, entered only once the symbols of every module in the
+// The thread that holds g_heapMapLock through LeakSymbolsHeapMapLock; dbghelp
+// must not load symbols on it (see CallStack::isSymbolLoadPending).
+static volatile LONG g_noSymbolLoadThreadId = 0;
+
+extern "C" bool VldSymbolLoadForbidden(void)
+{
+    return static_cast<DWORD>(InterlockedCompareExchange(&g_noSymbolLoadThreadId, 0, 0)) == GetCurrentThreadId();
+}
+
+// Holds g_heapMapLock, entered once the symbols of every module in the
 // unreported leaks' call stacks are loaded. Leaks allocated while the symbols
-// load can bring new modules, so the check repeats under the lock.
+// load can bring new modules, so the check repeats under the lock; whatever is
+// still deferred after that is not loaded under the lock but shown as an
+// address. g_leakQueryLock keeps a second caller from holding g_heapMapLock
+// while it waits for g_DbgHelp, which a loading thread holds.
 class LeakSymbolsHeapMapLock
 {
 public:
@@ -2858,23 +2873,27 @@ public:
         if (VldArm64InTeardownReport())
             loadSymbols = false;
 #endif
+        g_leakQueryLock.Enter();
         const int maxAttempts = 8;
         for (int attempt = 1; ; attempt++) {
             g_heapMapLock.Enter();
             if (!loadSymbols)
-                return;
+                break;
             Set<UINT_PTR> pages;
             vld.collectLeakPages(pages, threadId);
             if (attempt == maxAttempts || VisualLeakDetector::areModuleSymbolsLoaded(pages))
-                return;
+                break;
             g_heapMapLock.Leave();
             VisualLeakDetector::loadModuleSymbols(pages);
         }
+        InterlockedExchange(&g_noSymbolLoadThreadId, static_cast<LONG>(GetCurrentThreadId()));
     }
 
     ~LeakSymbolsHeapMapLock()
     {
+        InterlockedExchange(&g_noSymbolLoadThreadId, 0);
         g_heapMapLock.Leave();
+        g_leakQueryLock.Leave();
     }
 
 private:

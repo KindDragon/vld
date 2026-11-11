@@ -50,6 +50,22 @@ extern DbgHelp g_DbgHelp;
 extern "C" bool VldArm64InTeardownReport(void);
 #endif
 
+// Defined in vld.cpp. True on the thread that holds g_heapMapLock for leak
+// counting or reporting, where a deferred symbol load could deadlock.
+extern "C" bool VldSymbolLoadForbidden(void);
+
+// True when resolving programCounter would make dbghelp load deferred symbols
+// on a thread where that is forbidden; the frame is then shown as an address.
+static bool isSymbolLoadPending(SIZE_T programCounter, CriticalSectionLocker<DbgHelp>& locker)
+{
+    if (!VldSymbolLoadForbidden())
+        return false;
+    IMAGEHLP_MODULEW64 moduleInfo = { 0 };
+    moduleInfo.SizeOfStruct = sizeof(moduleInfo);
+    return g_DbgHelp.SymGetModuleInfoW64(g_currentProcess, programCounter, &moduleInfo, locker) &&
+        moduleInfo.SymType == SymDeferred;
+}
+
 // Helper function to compare the begin of a string with a substring
 //
 template <size_t N>
@@ -233,7 +249,8 @@ LPCWSTR CallStack::getFunctionName(SIZE_T programCounter, DWORD64& displacement6
     }
 #endif
     DbgTrace(L"dbghelp32.dll %i: SymFromAddrW\n", GetCurrentThreadId());
-    if (g_DbgHelp.SymFromAddrW(g_currentProcess, programCounter, &displacement64, functionInfo, locker)) {
+    if (!isSymbolLoadPending(programCounter, locker) &&
+        g_DbgHelp.SymFromAddrW(g_currentProcess, programCounter, &displacement64, functionInfo, locker)) {
         functionName = functionInfo->Name;
 #if defined(_M_X64)
         // Without symbols dbghelp names ARM64EC code (x64 process on ARM64)
@@ -489,7 +506,8 @@ int CallStack::resolve(BOOL showInternalFrames)
 #if defined(_M_ARM64)
         if (!VldArm64InTeardownReport())
 #endif
-        foundline = g_DbgHelp.SymGetLineFromAddrW64(g_currentProcess, programCounter, &displacement, &sourceInfo, locker);
+        if (!isSymbolLoadPending(programCounter, locker))
+            foundline = g_DbgHelp.SymGetLineFromAddrW64(g_currentProcess, programCounter, &displacement, &sourceInfo, locker);
 
         bool isFrameInternal = false;
         if (foundline && !showInternalFrames) {
