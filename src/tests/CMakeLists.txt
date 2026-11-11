@@ -506,6 +506,47 @@ add_custom_command(TARGET no_protect_to_read_test POST_BUILD
 )
 
 # ============================================================================
+# g_heapMapLock deadlock regression test
+#
+# VLD must not resolve symbols (dbghelp) while holding g_heapMapLock: a
+# deferred symbol load that needs the loader lock deadlocks against a thread
+# in DLL_THREAD_ATTACH whose allocation waits for g_heapMapLock. The test makes
+# that ordering deterministic and fails via a watchdog instead of hanging.
+# ============================================================================
+add_vld_test(heapmaplock_deadlock_dll
+    IS_DLL
+    SOURCES heapmaplock_deadlock_test/heapmaplock_deadlock_dll.cpp
+)
+add_vld_test(heapmaplock_deadlock_test
+    SOURCES heapmaplock_deadlock_test/heapmaplock_deadlock_test.cpp
+)
+add_dependencies(heapmaplock_deadlock_test heapmaplock_deadlock_dll)
+
+foreach(HEAPMAPLOCK_TARGET heapmaplock_deadlock_test heapmaplock_deadlock_dll)
+    set_target_properties(${HEAPMAPLOCK_TARGET} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/heapmaplock_deadlock_test"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug/heapmaplock_deadlock_test"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release/heapmaplock_deadlock_test"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/bin/RelWithDebInfo/heapmaplock_deadlock_test"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/bin/MinSizeRel/heapmaplock_deadlock_test"
+    )
+endforeach()
+
+add_custom_command(TARGET heapmaplock_deadlock_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/heapmaplock_deadlock_test/vld.ini"
+        "$<TARGET_FILE_DIR:heapmaplock_deadlock_test>/vld.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:vld>"
+        "$<TARGET_FILE_DIR:heapmaplock_deadlock_test>/$<TARGET_FILE_NAME:vld>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/setup/dbghelp/${DBGHELP_ARCH}/dbghelp.dll"
+        "$<TARGET_FILE_DIR:heapmaplock_deadlock_test>/dbghelp.dll"
+    COMMENT "Copying heapmaplock_deadlock_test vld.ini, VLD DLL, and dbghelp.dll"
+)
+set_property(TEST heapmaplock_deadlock_test PROPERTY TIMEOUT 60)
+
+# ============================================================================
 # Deep Callstack Test - Tests for excessively long stack traces (PR #37)
 # ============================================================================
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/deep_callstack_test/deep_callstack_test.cpp)
