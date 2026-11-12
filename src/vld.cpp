@@ -382,6 +382,9 @@ VisualLeakDetector::VisualLeakDetector ()
     g_currentProcess = GetCurrentProcess();
     g_currentThread = GetCurrentThread();
     g_processHeap = GetProcessHeap();
+#if defined(_M_X64)
+    IsArm64Host();
+#endif
 
 #if defined(_M_ARM64)
     // On ARM64, kernel32 heap APIs (HeapAlloc/HeapFree/HeapReAlloc/HeapSize/HeapDestroy)

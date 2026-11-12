@@ -201,6 +201,15 @@ DWORD CalculateCRC32(UINT_PTR p, UINT startValue = 0xD202EF8D);
 // list of arguments.
 void GetFormattedMessage(DWORD last_error);
 HMODULE GetCallingModule(UINT_PTR pCaller);
+#if defined(_M_X64)
+// Names a program counter inside the ARM64EC code of an ARM64X module (an x64
+// process running on ARM64) after the export whose x64 thunk enters that exact
+// function. Returns FALSE when that does not apply.
+BOOL GetArm64EcExportName(UINT_PTR programCounter, LPWSTR name, SIZE_T nameChars, DWORD64* displacement);
+// TRUE when the host is ARM64. The first call resolves IsWow64Process2, which
+// may need the loader; make it before VLD holds any of its own locks.
+BOOL IsArm64Host();
+#endif
 DWORD FilterFunction(long);
 BOOL LoadBoolOption(LPCWSTR optionname, LPCWSTR defaultvalue, LPCWSTR inipath);
 UINT LoadIntOption(LPCWSTR optionname, UINT defaultvalue, LPCWSTR inipath);

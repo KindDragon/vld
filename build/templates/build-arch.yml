@@ -4,7 +4,8 @@
 parameters:
 - name: arch
   type: string
-  values: ['x64', 'x86', 'arm64']
+  # x64_on_arm64: x64 binaries built and tested on an ARM64 agent (x64 emulation)
+  values: ['x64', 'x86', 'arm64', 'x64_on_arm64']
 - name: configuration
   type: string
   default: 'RelWithDebInfo'
@@ -17,8 +18,22 @@ parameters:
 
 steps:
 # Verify ARM64 agent architecture (provisioning script should have patched it)
-- ${{ if eq(parameters.arch, 'arm64') }}:
+- ${{ if in(parameters.arch, 'arm64', 'x64_on_arm64') }}:
   - template: verify-arm64-agent.yml
+
+# Without an ARM64 OS the x64 tests would run natively and prove nothing about emulation
+- ${{ if eq(parameters.arch, 'x64_on_arm64') }}:
+  - task: PowerShell@2
+    displayName: 'Require ARM64 OS for x64 emulation'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $osArch = (Get-CimInstance Win32_OperatingSystem).OSArchitecture
+        Write-Host "OS architecture: $osArch"
+        if ($osArch -notlike "*ARM*") {
+          Write-Host "##[error]x64_on_arm64 needs an ARM64 OS, found: $osArch"
+          exit 1
+        }
 
 # Discover Visual Studio and setup build variables
 - task: PowerShell@2
@@ -32,6 +47,7 @@ steps:
         'x64'   { $cmakeArch = 'x64';   $targetPlatform = 'x64';   $msbuildHost = 'amd64' }
         'x86'   { $cmakeArch = 'Win32'; $targetPlatform = 'Win32'; $msbuildHost = 'amd64' }
         'arm64' { $cmakeArch = 'ARM64'; $targetPlatform = 'ARM64'; $msbuildHost = 'arm64' }
+        'x64_on_arm64' { $cmakeArch = 'x64'; $targetPlatform = 'x64'; $msbuildHost = 'arm64' }
       }
       Write-Host "##vso[task.setvariable variable=cmakeArch]$cmakeArch"
       Write-Host "##vso[task.setvariable variable=targetPlatform]$targetPlatform"

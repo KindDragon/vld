@@ -500,124 +500,57 @@ BOOL IsModulePatched (HMODULE importmodule, moduleentry_t patchtable [], UINT ta
     return FALSE;
 }
 
-#define MAX_PAGES_PROTECT 2
-
-typedef struct PROTECT_INSTANCE_TAG
+// Returns TRUE if [address, address + size) is committed, readable and not a
+// guard page. Never changes page protection: doing so on ARM64X system DLL data
+// pages faults inside the loader under x64 emulation on ARM64.
+static BOOL IsReadableMemory(LPCVOID address, SIZE_T size)
 {
-    DWORD old_protect[MAX_PAGES_PROTECT];
-    LPVOID address;
-    SIZE_T size;
-} PROTECT_INSTANCE;
-
-typedef struct PROTECT_INSTANCE_TAG* PROTECT_HANDLE;
-
-#ifdef _WIN64
-#define PAGE_MASK 0xFFFFFFFFFFFFF000
-#else
-#define PAGE_MASK 0xFFFFF000
-#endif
-
-#define PAGE_SIZE 0x1000
-
-// These functions are used for trampoline/thunk detection on all architectures.
-static BOOL VLDVirtualProtect(PROTECT_HANDLE protect_handle, LPVOID address, SIZE_T size, DWORD protect)
-{
-    size_t page_count = 0;
-    size_t pages_done = 0; // number of pages where VirtualProtect succeeded
-
-    // save the address and size so that we can restore in the same way
-    protect_handle->address = address;
-    protect_handle->size = size;
-
-    uintptr_t current_address = (uintptr_t)address;
-    BOOL succeeded = TRUE;
-
-    // walk all pages while we still have size > 0
-    while ((size > 0) && (page_count < MAX_PAGES_PROTECT))
+    const BYTE* current = (const BYTE*)address;
+    const BYTE* end = current + size;
+    while (current < end)
     {
-        uintptr_t page_address = current_address & PAGE_MASK;
-        SIZE_T size_in_page = page_address + PAGE_SIZE - current_address;
-        SIZE_T size_to_protect = (size_in_page < size) ? size_in_page : size;
-
-        BOOL result = VirtualProtect((LPVOID)current_address, size_to_protect, protect, &protect_handle->old_protect[page_count]);
-        if (!result)
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery(current, &mbi, sizeof(mbi)) != sizeof(mbi))
         {
-            Report(L"%zu: !!! VirtualProtect FAILED when protecting for address=%p, size=%zu, with GetLastError()=%lu, protect_handle->address=%p, protect_handle->size=%zu\n",
-                __LINE__, current_address, size_to_protect,
-                GetLastError(),
-                protect_handle->address, protect_handle->size);
-            succeeded = FALSE;
+            return FALSE;
+        }
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+        {
+            return FALSE;
+        }
+        switch (mbi.Protect & 0xFF)
+        {
+        case PAGE_READONLY:
+        case PAGE_READWRITE:
+        case PAGE_WRITECOPY:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
             break;
+        default:
+            return FALSE;
         }
-        pages_done++;
-        page_count++;
-        current_address += size_to_protect;
-        size -= size_to_protect;
+        current = (const BYTE*)mbi.BaseAddress + mbi.RegionSize;
     }
-
-    // On partial failure (some pages already had their protection changed),
-    // unwind those changes here so the caller can safely fail without
-    // leaking page-protection state. Callers historically `break` on a
-    // FALSE return from VLDVirtualProtect without calling VLDVirtualRestore,
-    // which previously left earlier successful pages in the new protection.
-    if (!succeeded && pages_done > 0)
-    {
-        uintptr_t restore_address = (uintptr_t)address;
-        SIZE_T restore_size_remaining = protect_handle->size;
-        for (size_t i = 0; i < pages_done; ++i)
-        {
-            uintptr_t page_address = restore_address & PAGE_MASK;
-            SIZE_T size_in_page = page_address + PAGE_SIZE - restore_address;
-            SIZE_T size_to_restore = (size_in_page < restore_size_remaining) ? size_in_page : restore_size_remaining;
-            DWORD dont_care;
-            // Best-effort restore on the failure path: log if it also fails
-            // but do not abort - we are already in an error path.
-            if (!VirtualProtect((LPVOID)restore_address, size_to_restore, protect_handle->old_protect[i], &dont_care))
-            {
-                Report(L"%zu: !!! VirtualProtect FAILED while unwinding partial protect: address=%p size=%zu err=%lu\n",
-                    __LINE__, restore_address, size_to_restore, GetLastError());
-            }
-            restore_address += size_to_restore;
-            restore_size_remaining -= size_to_restore;
-        }
-        // Zero out the handle so any later (incorrect) VLDVirtualRestore call
-        // becomes a no-op rather than re-applying stale protection.
-        protect_handle->address = NULL;
-        protect_handle->size = 0;
-    }
-
-    return succeeded;
+    return TRUE;
 }
 
-static void VLDVirtualRestore(PROTECT_HANDLE protect_handle)
+// Copies size bytes from address into buffer without changing page protection.
+static BOOL ReadMemory(LPCVOID address, LPVOID buffer, SIZE_T size)
 {
-    size_t page_count = 0;
-    SIZE_T size = protect_handle->size;
-    uintptr_t current_address = (uintptr_t)protect_handle->address;
-
-    // walk all pages while we still have size > 0
-    while ((size > 0) && (page_count < MAX_PAGES_PROTECT))
+    if (!IsReadableMemory(address, size))
     {
-        uintptr_t page_address = current_address & PAGE_MASK;
-        SIZE_T size_in_page = page_address + PAGE_SIZE - current_address;
-        SIZE_T size_to_protect = (size_in_page < size) ? size_in_page : size;
-
-        DWORD dont_care;
-        if (!VirtualProtect((LPVOID)current_address, size_to_protect, protect_handle->old_protect[page_count], &dont_care))
-        {
-            static volatile DWORD lastError = GetLastError();
-            Report(L"%zu: !!! VirtualProtect FAILED when restoring for address=%p, size=%zu, with GetLastError()=%lu, protect_handle->old_protect[page_count]=%lu, protect_handle->address=%p, protect_handle->size=%zu\n",
-                __LINE__, current_address, size_to_protect,
-                GetLastError(), protect_handle->old_protect[page_count],
-                protect_handle->address, protect_handle->size);
-            abort();
-        }
-
-        page_count++;
-        current_address += size_to_protect;
-        size -= size_to_protect;
+        return FALSE;
     }
-
+    __try
+    {
+        memcpy(buffer, address, size);
+    }
+    __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    {
+        return FALSE;
+    }
+    return TRUE;
 }
 
 LPVOID FindRealCode(LPVOID pCode)
@@ -648,13 +581,14 @@ LPVOID FindRealCode(LPVOID pCode)
         LPVOID cur = pCode;
         for (int depth = 0; depth < 16; depth++)
         {
-            PROTECT_INSTANCE protect_1;
-            // Protect up to 3 instructions (12 bytes); the longest sequence we
-            // decode is ADRP+LDR+BR.
-            if (!VLDVirtualProtect(&protect_1, cur, sizeof(ULONG) * 3, PAGE_EXECUTE_READ))
+            // Up to 3 instructions (12 bytes); the longest sequence we decode
+            // is ADRP+LDR+BR.
+            ULONG p[3];
+            if (!ReadMemory(cur, p, sizeof(p)))
+            {
                 break;
+            }
 
-            const ULONG* p = (const ULONG*)cur;
             ULONG i0 = p[0];
             LPVOID next = NULL;
 
@@ -688,16 +622,13 @@ LPVOID FindRealCode(LPVOID pCode)
                     // (analog of x64 FF25 jmp [rip+disp]).
                     ULONG_PTR imm12 = (i1 >> 10) & 0xFFFu;
                     ULONG_PTR slot = page + (imm12 << 3);
-                    PROTECT_INSTANCE protect_2;
-                    if (VLDVirtualProtect(&protect_2, (LPVOID)slot, sizeof(LPVOID), PAGE_READONLY))
+                    LPVOID target;
+                    if (ReadMemory((LPCVOID)slot, &target, sizeof(target)))
                     {
-                        next = *(LPVOID*)slot;
-                        VLDVirtualRestore(&protect_2);
+                        next = target;
                     }
                 }
             }
-
-            VLDVirtualRestore(&protect_1);
 
             if (next == NULL || next == cur)
                 break; // not a recognized thunk, or a self-loop: stop here
@@ -705,72 +636,38 @@ LPVOID FindRealCode(LPVOID pCode)
         }
         result = cur;
 #else
-        // we need to make sure we can read the first 7 ULONG_PTRs
-        PROTECT_INSTANCE protect_1;
-
-        if (VLDVirtualProtect(&protect_1, pCode, sizeof(ULONG_PTR) * 7, PAGE_EXECUTE_READ))
+        // JMP r/m32 (FF 25 disp32/addr32) and JMP rel32 (E9 rel32) are at most 6 bytes.
+        BYTE code[6];
+        if (ReadMemory(pCode, code, sizeof(code)))
         {
-            if (*(WORD*)pCode == 0x25ff) // JMP r/m32
+            if (*(WORD*)code == 0x25ff) // JMP r/m32
             {
 #ifdef _WIN64
-                LONG offset = *((LONG*)((ULONG_PTR)pCode + 2));
                 // RIP relative addressing
-                PBYTE pNextInst = (PBYTE)((ULONG_PTR)pCode + 6);
-
-                // now that we got the offset, make sure we can read the code at the offset
-                PROTECT_INSTANCE protect_2;
-                PBYTE addr = pNextInst + offset;
-
-                if (VLDVirtualProtect(&protect_2, (LPVOID*)addr, sizeof(LPVOID), PAGE_EXECUTE_READ))
-                {
-                    pCode = *(LPVOID*)(addr);
-                    result = FindRealCode(pCode);
-                    VLDVirtualRestore(&protect_2);
-                }
-                else
-                {
-                    result = NULL;
-                }
+                LONG offset = *(LONG*)(code + 2);
+                PBYTE slot = (PBYTE)pCode + 6 + offset;
 #else
-                DWORD addr = *((DWORD*)((ULONG_PTR)pCode + 2));
-                // now that we got the address to read, make sure we can read the code at the offset
-                PROTECT_INSTANCE protect_2;
-                if (VLDVirtualProtect(&protect_2, (LPVOID)addr, sizeof(LPVOID), PAGE_EXECUTE_READ))
-                {
-                    pCode = *(LPVOID*)(addr);
-                    result = FindRealCode(pCode);
-                    VLDVirtualRestore(&protect_2);
-                }
-                else
-                {
-                    result = NULL;
-                }
+                PBYTE slot = (PBYTE)(ULONG_PTR)*(DWORD*)(code + 2);
 #endif
-            }
-            else if (*(BYTE*)pCode == 0xE9) // JMP rel32
-            {
-                // Relative next instruction
-                PROTECT_INSTANCE protect_2;
-                PBYTE pNextInst = (PBYTE)((ULONG_PTR)pCode + 5);
-                LONG offset = *((LONG*)((ULONG_PTR)pCode + 1));
-                if (VLDVirtualProtect(&protect_2, pNextInst + offset, sizeof(LPVOID), PAGE_EXECUTE_READ))
+                LPVOID target;
+                if (ReadMemory(slot, &target, sizeof(target)))
                 {
-                    pCode = (LPVOID*)(pNextInst + offset);
-                    result = FindRealCode(pCode);
-                    VLDVirtualRestore(&protect_2);
+                    result = FindRealCode(target);
                 }
                 else
                 {
                     result = NULL;
                 }
+            }
+            else if (code[0] == 0xE9) // JMP rel32
+            {
+                LONG offset = *(LONG*)(code + 1);
+                result = FindRealCode((PBYTE)pCode + 5 + offset);
             }
             else
             {
                 result = pCode;
             }
-
-            // restore the page protection state
-            VLDVirtualRestore(&protect_1);
         }
         else
         {
@@ -784,6 +681,243 @@ LPVOID FindRealCode(LPVOID pCode)
     }
     return result;
 }
+
+#if defined(_M_X64)
+// IMAGE_ARM64EC_METADATA, which the SDK does not declare. The load config
+// CHPEMetadataPointer of an ARM64X image (seen from an x64 process) points here.
+typedef struct ARM64EC_METADATA_TAG
+{
+    ULONG Version;
+    ULONG CodeMap;
+    ULONG CodeMapCount;
+    ULONG CodeRangesToEntryPoints;
+    ULONG RedirectionMetadata;
+    ULONG DispatchCallNoRedirect;
+    ULONG DispatchRet;
+    ULONG DispatchCall;
+    ULONG DispatchICall;
+    ULONG DispatchICallCfg;
+    ULONG AlternateEntryPoint;
+    ULONG AuxiliaryIAT;
+    ULONG CodeRangesToEntryPointsCount;
+    ULONG RedirectionMetadataCount;
+    ULONG GetX64InformationFunctionPointer;
+    ULONG SetX64InformationFunctionPointer;
+    ULONG ExtraRFETable;     // ARM64 RUNTIME_FUNCTIONs of the ARM64/ARM64EC code
+    ULONG ExtraRFETableSize;
+} ARM64EC_METADATA;
+
+#define ARM64EC_CODE_RANGE_ARM64EC 1
+
+typedef struct ARM64EC_CODE_RANGE_TAG
+{
+    ULONG StartOffset;  // low 2 bits: range type
+    ULONG Length;
+} ARM64EC_CODE_RANGE;
+
+// x64 export thunk of an ARM64X image: mov rax,rsp; mov [rax+20h],rbx;
+// push rbp; pop rbp; jmp rel32 <ARM64EC body>.
+static const BYTE g_arm64EcExportThunk[] = { 0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x5D, 0xE9 };
+
+static BOOL GetArm64EcExportNameUnsafe(UINT_PTR programCounter, LPWSTR name, SIZE_T nameChars, DWORD64* displacement)
+{
+    BYTE* base = (BYTE*)GetCallingModule(programCounter);
+    if (base == NULL)
+    {
+        return FALSE;
+    }
+    IMAGE_NT_HEADERS64* nt = (IMAGE_NT_HEADERS64*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        return FALSE;
+    }
+    DWORD imageSize = nt->OptionalHeader.SizeOfImage;
+    DWORD pcRva = (DWORD)(programCounter - (UINT_PTR)base);
+
+    IMAGE_DATA_DIRECTORY loadConfigDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    if (loadConfigDir.VirtualAddress == 0)
+    {
+        return FALSE;
+    }
+    IMAGE_LOAD_CONFIG_DIRECTORY64* loadConfig = (IMAGE_LOAD_CONFIG_DIRECTORY64*)(base + loadConfigDir.VirtualAddress);
+    if (loadConfig->Size < offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, CHPEMetadataPointer) + sizeof(ULONGLONG) ||
+        loadConfig->CHPEMetadataPointer == 0)
+    {
+        return FALSE;
+    }
+    const ARM64EC_METADATA* metadata = (const ARM64EC_METADATA*)loadConfig->CHPEMetadataPointer;
+    if ((BYTE*)metadata < base || (BYTE*)(metadata + 1) > base + imageSize)
+    {
+        return FALSE;
+    }
+
+    // The program counter must be in ARM64EC code.
+    const ARM64EC_CODE_RANGE* codeMap = (const ARM64EC_CODE_RANGE*)(base + metadata->CodeMap);
+    BOOL inEcCode = FALSE;
+    for (ULONG i = 0; i < metadata->CodeMapCount; i++)
+    {
+        DWORD start = codeMap[i].StartOffset & ~3u;
+        if ((codeMap[i].StartOffset & 3u) == ARM64EC_CODE_RANGE_ARM64EC &&
+            pcRva >= start && pcRva - start < codeMap[i].Length)
+        {
+            inEcCode = TRUE;
+            break;
+        }
+    }
+    if (!inEcCode)
+    {
+        return FALSE;
+    }
+
+    // Find the ARM64 function containing the program counter (sorted by BeginAddress).
+    const IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY* functions =
+        (const IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY*)(base + metadata->ExtraRFETable);
+    ULONG low = 0;
+    ULONG high = metadata->ExtraRFETableSize / sizeof(IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY);
+    while (low < high)
+    {
+        ULONG mid = low + (high - low) / 2;
+        if (functions[mid].BeginAddress <= pcRva)
+        {
+            low = mid + 1;
+        }
+        else
+        {
+            high = mid;
+        }
+    }
+    if (low == 0)
+    {
+        return FALSE;
+    }
+    const IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY* function = &functions[low - 1];
+    DWORD functionLength;
+    if (function->Flag != 0)
+    {
+        functionLength = function->FunctionLength * 4;
+    }
+    else
+    {
+        functionLength = (*(const DWORD*)(base + function->UnwindData) & 0x3FFFF) * 4;
+    }
+    if (pcRva - function->BeginAddress >= functionLength)
+    {
+        return FALSE;
+    }
+
+    // Find the export whose x64 thunk jumps to that function.
+    IMAGE_DATA_DIRECTORY exportDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (exportDir.VirtualAddress == 0)
+    {
+        return FALSE;
+    }
+    const IMAGE_EXPORT_DIRECTORY* exports = (const IMAGE_EXPORT_DIRECTORY*)(base + exportDir.VirtualAddress);
+    const DWORD* functionRvas = (const DWORD*)(base + exports->AddressOfFunctions);
+    const DWORD* nameRvas = (const DWORD*)(base + exports->AddressOfNames);
+    const WORD* nameOrdinals = (const WORD*)(base + exports->AddressOfNameOrdinals);
+    for (DWORD i = 0; i < exports->NumberOfNames; i++)
+    {
+        WORD ordinal = nameOrdinals[i];
+        if (ordinal >= exports->NumberOfFunctions)
+        {
+            continue;
+        }
+        DWORD thunkRva = functionRvas[ordinal];
+        // Skip forwarders (RVA inside the export directory) and anything that
+        // does not leave room for a complete thunk.
+        if ((thunkRva >= exportDir.VirtualAddress && thunkRva - exportDir.VirtualAddress < exportDir.Size) ||
+            thunkRva == 0 || thunkRva > imageSize - (sizeof(g_arm64EcExportThunk) + sizeof(LONG)))
+        {
+            continue;
+        }
+        const BYTE* thunk = base + thunkRva;
+        if (memcmp(thunk, g_arm64EcExportThunk, sizeof(g_arm64EcExportThunk)) != 0)
+        {
+            continue;
+        }
+        LONG rel = *(const LONG*)(thunk + sizeof(g_arm64EcExportThunk));
+        DWORD targetRva = thunkRva + (DWORD)(sizeof(g_arm64EcExportThunk) + sizeof(LONG)) + (DWORD)rel;
+        if (targetRva != function->BeginAddress)
+        {
+            continue;
+        }
+
+        if (nameRvas[i] >= imageSize)
+        {
+            continue;
+        }
+        const char* exportName = (const char*)(base + nameRvas[i]);
+        SIZE_T maxLength = imageSize - nameRvas[i];
+        SIZE_T length = 0;
+        while (length + 1 < nameChars && length < maxLength && exportName[length] != '\0')
+        {
+            name[length] = (WCHAR)(BYTE)exportName[length];
+            length++;
+        }
+        name[length] = L'\0';
+        *displacement = pcRva - function->BeginAddress;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL s_isArm64Host = FALSE;
+
+static BOOL CALLBACK QueryArm64Host(PINIT_ONCE, PVOID, PVOID*)
+{
+    typedef BOOL (WINAPI *IsWow64Process2_t)(HANDLE, USHORT*, USHORT*);
+    // IsWow64Process2 tells the real host machine even to an emulated x64
+    // process (GetNativeSystemInfo reports AMD64 there). It exists since
+    // Windows 10 1709, the first release that runs on ARM64.
+    IsWow64Process2_t isWow64Process2 = (IsWow64Process2_t)GetProcAddress(
+        GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2");
+    USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+    USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+    s_isArm64Host = isWow64Process2 != NULL &&
+        isWow64Process2(GetCurrentProcess(), &processMachine, &nativeMachine) &&
+        nativeMachine == IMAGE_FILE_MACHINE_ARM64;
+    return TRUE;
+}
+
+// Only ARM64 hosts load ARM64X images into x64 processes.
+BOOL IsArm64Host()
+{
+    static INIT_ONCE s_arm64HostOnce = INIT_ONCE_STATIC_INIT;
+    if (!InitOnceExecuteOnce(&s_arm64HostOnce, QueryArm64Host, NULL, NULL))
+    {
+        return FALSE;
+    }
+    return s_isArm64Host;
+}
+
+BOOL GetArm64EcExportName(UINT_PTR programCounter, LPWSTR name, SIZE_T nameChars, DWORD64* displacement)
+{
+    if (name == NULL || nameChars == 0 || displacement == NULL || !IsArm64Host())
+    {
+        return FALSE;
+    }
+    // Built aside so that a fault halfway leaves the caller's name intact.
+    WCHAR candidate[256];
+    DWORD64 candidateDisplacement = 0;
+    BOOL found;
+    // The module can be unloaded concurrently; treat any fault as "does not apply".
+    __try
+    {
+        found = GetArm64EcExportNameUnsafe(programCounter, candidate,
+            nameChars < _countof(candidate) ? nameChars : _countof(candidate), &candidateDisplacement);
+    }
+    __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    {
+        found = FALSE;
+    }
+    if (found)
+    {
+        wcsncpy_s(name, nameChars, candidate, _TRUNCATE);
+        *displacement = candidateDisplacement;
+    }
+    return found;
+}
+#endif // _M_X64
 
 #define MAX_PATCH_ENTRY_COUNT 128
 

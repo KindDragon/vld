@@ -235,6 +235,18 @@ LPCWSTR CallStack::getFunctionName(SIZE_T programCounter, DWORD64& displacement6
     DbgTrace(L"dbghelp32.dll %i: SymFromAddrW\n", GetCurrentThreadId());
     if (g_DbgHelp.SymFromAddrW(g_currentProcess, programCounter, &displacement64, functionInfo, locker)) {
         functionName = functionInfo->Name;
+#if defined(_M_X64)
+        // Without symbols dbghelp names ARM64EC code (x64 process on ARM64)
+        // after the nearest x64 export thunk, which is an unrelated function.
+        if (functionInfo->Flags & SYMFLAG_EXPORT) {
+            GetArm64EcExportName(programCounter, functionInfo->Name, functionInfo->MaxNameLen, &displacement64);
+        }
+#endif
+        // ARM64EC code in ARM64X system DLLs (what x64 processes run on ARM64)
+        // has its symbols decorated with a leading '#'.
+        if (functionName[0] == L'#' && functionName[1] != L'\0') {
+            functionName++;
+        }
     }
     else {
         // GetFormattedMessage( GetLastError() );

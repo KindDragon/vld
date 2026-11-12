@@ -471,6 +471,41 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/dyn_symbol_test/dyn_symbol_test.cpp)
 endif()
 
 # ============================================================================
+# No protect-to-read regression test
+#
+# Loads VLD dynamically with its VirtualProtect import redirected to a counter
+# and fails if VLD changes page protection only to read memory. Doing so on
+# ntdll data pages crashes x64 processes under x64 emulation on ARM64.
+# ============================================================================
+add_vld_test(no_protect_to_read_test
+    NO_VLD_LINK
+    SOURCES no_protect_to_read_test/no_protect_to_read_test.cpp
+    DEFINITIONS "VLD_DLL_NAME=L\"$<TARGET_FILE_NAME:vld>\""
+)
+add_dependencies(no_protect_to_read_test vld)
+
+set_target_properties(no_protect_to_read_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/no_protect_to_read_test"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug/no_protect_to_read_test"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release/no_protect_to_read_test"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/bin/RelWithDebInfo/no_protect_to_read_test"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/bin/MinSizeRel/no_protect_to_read_test"
+)
+
+add_custom_command(TARGET no_protect_to_read_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/no_protect_to_read_test/vld.ini"
+        "$<TARGET_FILE_DIR:no_protect_to_read_test>/vld.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:vld>"
+        "$<TARGET_FILE_DIR:no_protect_to_read_test>/$<TARGET_FILE_NAME:vld>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/setup/dbghelp/${DBGHELP_ARCH}/dbghelp.dll"
+        "$<TARGET_FILE_DIR:no_protect_to_read_test>/dbghelp.dll"
+    COMMENT "Copying no_protect_to_read_test vld.ini, VLD DLL, and dbghelp.dll"
+)
+
+# ============================================================================
 # Deep Callstack Test - Tests for excessively long stack traces (PR #37)
 # ============================================================================
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/deep_callstack_test/deep_callstack_test.cpp)
